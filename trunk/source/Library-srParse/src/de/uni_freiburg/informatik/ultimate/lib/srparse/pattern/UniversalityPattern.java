@@ -8,6 +8,10 @@ import de.uni_freiburg.informatik.ultimate.lib.pea.PhaseEventAutomata;
 import de.uni_freiburg.informatik.ultimate.lib.pea.reqcheck.PatternToPEA;
 import de.uni_freiburg.informatik.ultimate.lib.srparse.SrParseScope;
 
+
+/*
+ *  * {scope}, it is always the case that "S" holds.
+ */
 public class UniversalityPattern extends PatternType {
 
 	public UniversalityPattern(final SrParseScope scope, final String id, final List<CDD> cdds,
