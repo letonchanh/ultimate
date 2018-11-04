@@ -146,7 +146,7 @@ function compile_z3()
 	cd "${WORKING_DIR}"
 
 	if [ -d "${BUILD_DIR}" ]; then
-		EXISTING=$(dirname $(readlink -e "${BUILD_DIR}"))
+		EXISTING=$(dirname $(greadlink -e "${BUILD_DIR}"))
 		echo -n "Warning: Build directory ${EXISTING} already exists. Remove? [Y/n] "
 		read answer
 		if [ ! -z ${answer} ]; then

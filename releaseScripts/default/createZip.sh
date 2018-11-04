@@ -151,7 +151,7 @@ test cp ${SETTINGS} "$CONFIGDIR"/.
 
 ## copy all adds to target dir 
 for add in "${ADDS[@]}" ; do 
-    if ! readlink -fe $add > /dev/null ; then 
+    if ! greadlink -fe $add > /dev/null ; then 
         echo "$add does not exist, aborting..." 
         exit 1
     fi 
