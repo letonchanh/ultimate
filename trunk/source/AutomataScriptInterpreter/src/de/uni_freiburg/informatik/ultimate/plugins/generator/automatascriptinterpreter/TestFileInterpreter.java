@@ -1305,7 +1305,7 @@ public class TestFileInterpreter implements IMessagePrinter {
 				return Collections.emptyList();
 			}
 		} else {
-			throw new UnsupportedOperationException("unknown protocol " + protocol + ".");
+			throw new UnsupportedOperationException("unknown protocol " + protocol + " " + dirUrl.getPath());
 		}
 		return resolveDirectories(Arrays.asList(dirFile));
 	}
