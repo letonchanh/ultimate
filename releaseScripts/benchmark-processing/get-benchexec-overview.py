@@ -9,10 +9,10 @@ import sys
 from functools import reduce
 
 """
-(k,v) where 
-  k is the string we search, 
-  v iff the log line where we found the string is the one we want to show, 
-  !v iff the following log line is the one we want to show   
+(k,v) where
+  k is the string we search,
+  v iff the log line where we found the string is the one we want to show,
+  !v iff the following log line is the one we want to show
 """
 known_exceptions = {
     "Argument of \"settings\" has invalid value": True,
@@ -40,9 +40,17 @@ known_exceptions = {
     "Wrong parameter type at index": True,
     "Undeclared identifier ": True,
     "Modifies not transitive": True,
+    "encountered a call to a var args function and varargs usage is unknown":True,
+    "UnsupportedOperationException: floating point operation not supported in non-bitprecise translation":True,
+    "ClassCastException: de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.container.c.CPointer cannot be cast to de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.container.c.CPrimitive":True,
+    "StackOverflowError: null":True,
     "No suitable toolchain file found": True,
     "No suitable file found in config dir": True,
+    "AssertionError: var is still there": True,
+    "IllegalStateException: Petrification does not provide enough thread instances": True,
     "ExceptionOrErrorResult": False,
+    "was unable to instantiate class": True,
+    "de.uni_freiburg.informatik.ultimate.core.coreplugin.exceptions.ParserInitializationException: Parser initialization failed":True,
     "RESULT: Ultimate could not prove your program: Toolchain returned no result.": True,
 }
 
@@ -269,6 +277,7 @@ def process_wrapper_script_log(file):
 def process_direct_call_log(file):
     result = None
     with open(file) as f:
+        version = ''
         lines = [line.rstrip('\n') for line in f].__iter__()
         for line in lines:
             if not line:

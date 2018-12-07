@@ -57,29 +57,32 @@ public class EvaluatorFactory<VALUE extends INonrelationalValue<VALUE>, STATE ex
 	private static final int BUFFER_MAX = 100;
 
 	private final int mMaxParallelStates;
+	private final int mMaxRecursionDepth;
 	private final EvaluatorLogger mEvalLogger;
 
 	private final INonrelationalValueFactory<VALUE> mNonrelationalValueFactory;
 	private final Function<String, VALUE> mSingletonValueExpressionEvaluatorCreator;
 
-	public EvaluatorFactory(final ILogger logger, final int maxParallelStates,
+	public EvaluatorFactory(final ILogger logger, final int maxParallelStates, final int maxRecursionDepth,
 			final INonrelationalValueFactory<VALUE> nonrelationalValueFactory,
 			final Function<String, VALUE> singletonValueEvaluatorCreator) {
 		mMaxParallelStates = maxParallelStates;
+		mMaxRecursionDepth = maxRecursionDepth;
 		mNonrelationalValueFactory = nonrelationalValueFactory;
 		mSingletonValueExpressionEvaluatorCreator = singletonValueEvaluatorCreator;
 		mEvalLogger = new EvaluatorLogger(logger);
 	}
 
 	@Override
-	public INAryEvaluator<VALUE, STATE> createNAryExpressionEvaluator(final int arity, final EvaluatorType type) {
+	public NAryEvaluator<VALUE, STATE> createNAryExpressionEvaluator(final int arity, final EvaluatorType type) {
 		assert arity >= ARITY_MIN && arity <= ARITY_MAX;
 
 		switch (arity) {
 		case ARITY_MIN:
-			return new UnaryExpressionEvaluator<>(mEvalLogger, mNonrelationalValueFactory);
+			return new UnaryExpressionEvaluator<>(mEvalLogger, mMaxRecursionDepth, mNonrelationalValueFactory);
 		case ARITY_MAX:
-			return new BinaryExpressionEvaluator<>(mEvalLogger, type, mMaxParallelStates, mNonrelationalValueFactory);
+			return new BinaryExpressionEvaluator<>(mEvalLogger, type, mMaxParallelStates, mMaxRecursionDepth,
+					mNonrelationalValueFactory);
 		default:
 			throw new UnsupportedOperationException(new StringBuilder(BUFFER_MAX).append("Arity of ").append(arity)
 					.append(" is not implemented.").toString());
@@ -87,23 +90,25 @@ public class EvaluatorFactory<VALUE extends INonrelationalValue<VALUE>, STATE ex
 	}
 
 	@Override
-	public IEvaluator<VALUE, STATE> createFunctionEvaluator(final String functionName, final int inputParamCount,
+	public Evaluator<VALUE, STATE> createFunctionEvaluator(final String functionName, final int inputParamCount,
 			final EvaluatorType type) {
-		return new FunctionEvaluator<>(functionName, inputParamCount, mNonrelationalValueFactory, type);
+		return new FunctionEvaluator<>(functionName, inputParamCount, mMaxRecursionDepth, mNonrelationalValueFactory,
+				type, mEvalLogger);
 	}
 
 	@Override
-	public IEvaluator<VALUE, STATE> createConditionalEvaluator() {
-		return new ConditionalEvaluator<>(mNonrelationalValueFactory);
+	public Evaluator<VALUE, STATE> createConditionalEvaluator() {
+		return new ConditionalEvaluator<>(mMaxRecursionDepth, mNonrelationalValueFactory, mEvalLogger);
 	}
 
 	@Override
-	public IEvaluator<VALUE, STATE> createSingletonValueTopEvaluator(final EvaluatorType type) {
-		return new SingletonValueExpressionEvaluator<>(mNonrelationalValueFactory.createTopValue(), type);
+	public Evaluator<VALUE, STATE> createSingletonValueTopEvaluator(final EvaluatorType type) {
+		return new SingletonValueExpressionEvaluator<>(mNonrelationalValueFactory.createTopValue(), type,
+				mMaxParallelStates, mNonrelationalValueFactory, mEvalLogger);
 	}
 
 	@Override
-	public IEvaluator<VALUE, STATE> createSingletonValueExpressionEvaluator(final String value,
+	public Evaluator<VALUE, STATE> createSingletonValueExpressionEvaluator(final String value,
 			final Class<?> valueType) {
 		assert value != null;
 		final EvaluatorType evaluatorType;
@@ -117,18 +122,21 @@ public class EvaluatorFactory<VALUE extends INonrelationalValue<VALUE>, STATE ex
 			throw new IllegalArgumentException("Unknown type " + valueType);
 		}
 		return new SingletonValueExpressionEvaluator<>(
-				mSingletonValueExpressionEvaluatorCreator.apply(value, valueType), evaluatorType);
+				mSingletonValueExpressionEvaluatorCreator.apply(value, valueType), evaluatorType, mMaxRecursionDepth,
+				mNonrelationalValueFactory, mEvalLogger);
 	}
 
 	@Override
-	public IEvaluator<VALUE, STATE> createSingletonVariableExpressionEvaluator(final IProgramVarOrConst variableName) {
+	public Evaluator<VALUE, STATE> createSingletonVariableExpressionEvaluator(final IProgramVarOrConst variableName) {
 		assert variableName != null;
-		return new SingletonVariableExpressionEvaluator<>(variableName, mNonrelationalValueFactory);
+		return new SingletonVariableExpressionEvaluator<>(variableName, mMaxRecursionDepth, mNonrelationalValueFactory,
+				mEvalLogger);
 	}
 
 	@Override
-	public IEvaluator<VALUE, STATE> createSingletonLogicalValueExpressionEvaluator(final BooleanValue value) {
-		return new SingletonBooleanExpressionEvaluator<>(value, mNonrelationalValueFactory);
+	public Evaluator<VALUE, STATE> createSingletonLogicalValueExpressionEvaluator(final BooleanValue value) {
+		return new SingletonBooleanExpressionEvaluator<>(value, mMaxRecursionDepth, mNonrelationalValueFactory,
+				mEvalLogger);
 	}
 
 	@FunctionalInterface

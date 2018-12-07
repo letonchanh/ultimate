@@ -38,15 +38,18 @@ import java.util.Set;
 
 import de.uni_freiburg.informatik.ultimate.automata.AutomataLibraryException;
 import de.uni_freiburg.informatik.ultimate.automata.AutomataLibraryServices;
+import de.uni_freiburg.informatik.ultimate.automata.AutomataOperationCanceledException;
 import de.uni_freiburg.informatik.ultimate.automata.nestedword.INestedWordAutomaton;
 import de.uni_freiburg.informatik.ultimate.automata.nestedword.NestedWordAutomaton;
 import de.uni_freiburg.informatik.ultimate.automata.nestedword.VpAlphabet;
 import de.uni_freiburg.informatik.ultimate.automata.petrinet.IPetriNet;
 import de.uni_freiburg.informatik.ultimate.automata.petrinet.ITransition;
 import de.uni_freiburg.informatik.ultimate.automata.petrinet.Marking;
+import de.uni_freiburg.informatik.ultimate.automata.petrinet.PetriNetNot1SafeException;
 import de.uni_freiburg.informatik.ultimate.automata.petrinet.UnaryNetOperation;
 import de.uni_freiburg.informatik.ultimate.automata.statefactory.IPetriNet2FiniteAutomatonStateFactory;
 import de.uni_freiburg.informatik.ultimate.automata.statefactory.IStateFactory;
+import de.uni_freiburg.informatik.ultimate.core.lib.exceptions.RunningTaskInfo;
 
 /**
  * Given a Petri net, this class constructs a finite automaton that recognizes the same language.
@@ -84,9 +87,12 @@ public final class PetriNet2FiniteAutomaton<LETTER, PLACE> extends UnaryNetOpera
 	 *            content factory
 	 * @param operand
 	 *            operand Petri net
+	 * @throws PetriNetNot1SafeException
+	 * @throws AutomataOperationCanceledException
 	 */
 	public PetriNet2FiniteAutomaton(final AutomataLibraryServices services,
-			final IPetriNet2FiniteAutomatonStateFactory<PLACE> factory, final IPetriNet<LETTER, PLACE> operand) {
+			final IPetriNet2FiniteAutomatonStateFactory<PLACE> factory, final IPetriNet<LETTER, PLACE> operand)
+			throws PetriNetNot1SafeException, AutomataOperationCanceledException {
 		super(services);
 		mOperand = operand;
 
@@ -96,12 +102,20 @@ public final class PetriNet2FiniteAutomaton<LETTER, PLACE> extends UnaryNetOpera
 
 		mContentFactory = factory;
 		final Set<LETTER> alphabet = new HashSet<>(operand.getAlphabet());
-		final VpAlphabet<LETTER> vpAlphabet = new VpAlphabet<LETTER>(alphabet, Collections.emptySet(), Collections.emptySet());
+		final VpAlphabet<LETTER> vpAlphabet = new VpAlphabet<LETTER>(alphabet, Collections.emptySet(),
+				Collections.emptySet());
 		mResult = new NestedWordAutomaton<>(mServices, vpAlphabet, factory);
 		getState(new Marking(operand.getInitialPlaces()), true);
 		while (!mWorklist.isEmpty()) {
 			final Marking<LETTER, PLACE> marking = mWorklist.remove(0);
 			constructOutgoingTransitions(marking);
+			if (!mServices.getProgressAwareTimer().continueProcessing()) {
+				final RunningTaskInfo rti = new RunningTaskInfo(getClass(),
+						"constructing automaton for Petri net that has " + mOperand.sizeInformation() +
+						". Already constructed " + mMarking2State.size() + " states. Currently " + mWorklist.size() +
+						" states in worklist.");
+				throw new AutomataOperationCanceledException(rti);
+			}
 		}
 
 		if (mLogger.isInfoEnabled()) {
@@ -141,8 +155,9 @@ public final class PetriNet2FiniteAutomaton<LETTER, PLACE> extends UnaryNetOpera
 	/**
 	 * Given a marking. Get the state that represents the marking. Add all possible outgoing automaton transitions to
 	 * state. Construct (and enqueue to worklist) successor states if necessary.
+	 * @throws PetriNetNot1SafeException
 	 */
-	private void constructOutgoingTransitions(final Marking<LETTER, PLACE> marking) {
+	private void constructOutgoingTransitions(final Marking<LETTER, PLACE> marking) throws PetriNetNot1SafeException {
 		final PLACE state = getState(marking, false);
 		final Set<ITransition<LETTER, PLACE>> outgoing = getOutgoingNetTransitions(marking);
 		for (final ITransition<LETTER, PLACE> transition : outgoing) {

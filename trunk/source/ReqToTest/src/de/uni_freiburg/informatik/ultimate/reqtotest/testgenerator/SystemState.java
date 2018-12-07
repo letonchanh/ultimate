@@ -1,6 +1,7 @@
 package de.uni_freiburg.informatik.ultimate.reqtotest.testgenerator;
 
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
@@ -8,65 +9,40 @@ import de.uni_freiburg.informatik.ultimate.boogie.ast.Expression;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.IdentifierExpression;
 import de.uni_freiburg.informatik.ultimate.boogie.output.BoogiePrettyPrinter;
 import de.uni_freiburg.informatik.ultimate.core.model.translation.IProgramExecution.ProgramState;
+import de.uni_freiburg.informatik.ultimate.logic.TermVariable;
 
 public class SystemState extends ProgramState<Expression> {
 	
-	private final Set<Expression> mInputVariables;
-	private final Map<Expression, Collection<Expression>> mReqLocations;
-	private final int mTime;
+	private final double mTime;
+	private final Map<String,  Collection<Expression>> mIdentToValues = new HashMap<>();
 
-	public SystemState(Map<Expression, Collection<Expression>> variable2Values, Set<Expression> inputVariables, Map<Expression, Collection<Expression>> reqLocations, int time) {
+	public SystemState(Map<Expression, Collection<Expression>> variable2Values, double time) {
 		super(variable2Values);
-		mInputVariables = inputVariables;
-		mReqLocations = reqLocations;
 		mTime = time;
+		for(Expression v : variable2Values.keySet()) {
+			mIdentToValues.put(((IdentifierExpression)v).getIdentifier(), variable2Values.get(v));
+		}
 	}
 	
-	public boolean isInput(Expression e) {
-		return mInputVariables.contains(e);
+	public Collection<Expression> getValues(String ident){
+		return mIdentToValues.get(ident);
 	}
-
-	public String toOracleString() {
+	
+	public double getTimeStep() {
+		return mTime;
+	}
+	
+	public String getVarSetToValueSet(Set<TermVariable> varSet) {
 		StringBuilder sb = new StringBuilder();
-		for(Expression e: getVariables()) {
-			if(!isInput(e)) {
-				sb.append(formatAssignment(e, getValues(e)));
+		for(TermVariable var: varSet) {
+			sb.append(String.format(var.getName()));
+			sb.append(" := ");
+			for(Expression expr: getValues(var.getName())){
+				sb.append(BoogiePrettyPrinter.print(expr));
 			}
+			sb.append(", ");
 		}
 		return sb.toString();
 	}
 	
-	public String toString() {
-		StringBuilder sb = new StringBuilder();
-		sb.append(Integer.toString(mTime));
-		sb.append( " | " );
-		for(Expression e: getVariables()) {
-			if(isInput(e)) {
-				sb.append(formatAssignment(e, getValues(e)));
-			}
-		}		
-		sb.append(" | ");
-		for(Expression e: getVariables()) {
-			if(!isInput(e)) {
-				sb.append(formatAssignment(e, getValues(e)));
-			}
-		}
-		sb.append("														 (");
-		for(Expression e: mReqLocations.keySet()) {
-			sb.append(formatAssignment(e, mReqLocations.get(e)));
-		}
-		sb.append(" ) ");
-		return sb.toString();
-	}
-	
-	private String formatAssignment(Expression e, Collection<Expression> values) {
-		StringBuilder sb = new StringBuilder();
-		sb.append( BoogiePrettyPrinter.print(e));
-		sb.append( "=" );
-		for(Expression value: values) {
-			sb.append( BoogiePrettyPrinter.print(value));
-		}
-		sb.append("; ");
-		return sb.toString();
-	}
 }

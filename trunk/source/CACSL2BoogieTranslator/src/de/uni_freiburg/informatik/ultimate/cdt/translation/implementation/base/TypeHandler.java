@@ -440,12 +440,6 @@ public class TypeHandler implements ITypeHandler {
 				for (final CDeclaration declaration : rdec.getDeclarations()) {
 					fNames.add(declaration.getName());
 					fTypes.add(declaration.getType());
-					if (mTranslationSettings.useBitpreciseBitfields()) {
-						if (declaration.getBitfieldSize() != -1) {
-							final String msg = "bitfield implementation not yet bitprecise (soundness first)";
-							throw new UnsupportedSyntaxException(loc, msg);
-						}
-					}
 					bitFieldWidths.add(declaration.getBitfieldSize());
 				}
 			} else if (r instanceof SkipResult) { // skip ;)
@@ -962,6 +956,9 @@ public class TypeHandler implements ITypeHandler {
 
 	private static boolean areMatchingTypes(final CType type1, final CType type2,
 			final SymmetricHashRelation<CType> visitedPairs) {
+		if (type1 == type2) {
+			return true;
+		}
 
 		final CType ulType1 = type1.getUnderlyingType();
 		final CType ulType2 = type2.getUnderlyingType();
@@ -1031,7 +1028,7 @@ public class TypeHandler implements ITypeHandler {
 		}
 
 		// one function takes varargs, the other does not
-		if (type1.takesVarArgs() != type2.takesVarArgs()) {
+		if (type1.hasVarArgs() != type2.hasVarArgs()) {
 			return false;
 		}
 
@@ -1100,4 +1097,5 @@ public class TypeHandler implements ITypeHandler {
 	public void registerNamedIncompleteType(final String incompleteType, final String named) {
 		mNamedIncompleteTypes.addPair(incompleteType, named);
 	}
+
 }

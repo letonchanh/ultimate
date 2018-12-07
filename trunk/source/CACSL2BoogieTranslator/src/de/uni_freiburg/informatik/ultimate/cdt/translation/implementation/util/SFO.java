@@ -115,10 +115,6 @@ public final class SFO {
 	/**
 	 * Identifier of free procedure.
 	 */
-	public static final String FREE = "ULTIMATE.free";
-	/**
-	 * Identifier of free procedure.
-	 */
 	public static final String DEALLOC = "ULTIMATE.dealloc";
 	/**
 	 * The "#length" array identifier.
@@ -185,6 +181,9 @@ public final class SFO {
 	public static final String MEMCPY_SIZE = "size";
 	public static final String MEMCPY = "#memcpy";
 
+	public static final String STRCPY_DEST = "dest";
+	public static final String STRCPY_SRC = "src";
+
 	public static final String TO_INT = "#to_int";
 	public static final String MEMSET = "ULTIMATE.memset";
 
@@ -198,13 +197,31 @@ public final class SFO {
 	 */
 	public static final String ALLOC = "#Ultimate.alloc";
 
+	public static final String MEMINIT = "#Ultimate.meminit";
+
 	public static final String C_MEMCPY = "#Ultimate.C_memcpy";
 
 	public static final String C_MEMMOVE = "#Ultimate.C_memmove";
 
 	public static final String C_MEMSET = "#Ultimate.C_memset";
 
+	public static final String C_STRCPY = "#Ultimate.C_strcpy";
+
+	public static final String C_REALLOC = "#Ultimate.C_realloc";
+
+	public static final String REALLOC_PTR = "ptr";
+	public static final String REALLOC_SIZE = "size";
+
 	public static final String ULTIMATE_PTHREADS_MUTEX = "#pthreadsMutex";
+
+	public static final String INIT_TO_ZERO_AT_ADDRESS = "initToZeroAtPointerBaseAddress~";
+
+	public static final String STORE_SUBARRAY_AT_ADDRESS = "storeAtPointerBaseAddress~";
+
+	public static final String SELECT_SUBARRAY_AT_ADDRESS = "selectAtPointerBaseAddress~";
+
+
+
 
 
 	/**
@@ -212,9 +229,15 @@ public final class SFO {
 	 */
 	public enum AUXVAR {
 		/**
-		 * variable used for a loop that we introduce through the translatino
+		 * variable used for a loop that we introduce through the translation
 		 */
 		LOOPCTR("loopctr"),
+
+		/**
+		 * variable used for an increasing address offset in a loop that we introduce through the translation
+		 */
+		OFFSET("offset"),
+
 
 		/**
 		 * Auxiliary variable used to store the result of a call of a function pointer.
@@ -306,6 +329,12 @@ public final class SFO {
 		STRINGLITERAL("string"),
 
 		/**
+		 * Auxiliary variable used for the memory address of a compound literal
+		 */
+		COMPOUNDLITERAL("compoundliteral"),
+
+
+		/**
 		 * Auxiliary variable used for struct initialisation.
 		 */
 		STRUCTINIT("structinit"),
@@ -318,17 +347,29 @@ public final class SFO {
 		/**
 		 * Auxiliary variable used for the result of a call to the 'builtin' memcpy function
 		 */
-		MEMCPYRES("memcpy"),
+		MEMCPYRES("memcpy~res"),
 
 		/**
 		 * Auxiliary variable used for the result of a call to the 'builtin' memmove function
 		 */
-		MEMMOVERES("memmove"),
+		MEMMOVERES("memmove~res"),
 
 		/**
 		 * Auxiliary variable used for the result of a call to the 'builtin' memset function
 		 */
-		MEMSETRES("memset"),
+		MEMSETRES("memset~res"),
+
+		/**
+		 * Auxiliary variable used for the result of a call to the strcpy function
+		 */
+		STRCPYRES("strcpy~res"),
+
+		/**
+		 * Auxiliary variable used for the result of a call to the realloc function
+		 */
+		REALLOCRES("realloc~res"),
+
+		REALLOC_OLDPTR("oldPtr"),
 
 		/**
 		 * Name for dummy expressions that represent a "void" result. Those identifier expressions may not be used
@@ -336,6 +377,7 @@ public final class SFO {
 		 * (note that this string has to fit the regex that is checked during creation of an IdentifierExpression...)
 		 */
 		DUMMY_VOID("#dummy~void~value"),
+
 
 		;
 

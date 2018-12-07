@@ -115,6 +115,7 @@ public class PreRunner extends ASTVisitor {
 	 * Constructor.
 	 */
 	public PreRunner(final FlatSymbolTable symTab, final Map<String, IASTNode> functionTable) {
+		super();
 		shouldVisitDeclarations = true;
 		shouldVisitParameterDeclarations = true;
 		shouldVisitExpressions = true;
@@ -175,8 +176,9 @@ public class PreRunner extends ASTVisitor {
 			// final ILocation loc = LocationFactory.createCLocation(expression);
 			final ILocation loc = LocationFactory.createIgnoreCLocation(expression);
 			final IASTUnaryExpression ue = (IASTUnaryExpression) expression;
-			if (ue.getOperator() == IASTUnaryExpression.op_amper) {// every variable that is addressoffed has to be on
-																	// the heap
+			if (ue.getOperator() == IASTUnaryExpression.op_amper) {
+				// every variable that is addressoffed has to be on
+				// the heap
 				final IASTNode operand = ue.getOperand();
 				// add the operand to VariablesOnHeap!
 				String id = null;
@@ -185,14 +187,13 @@ public class PreRunner extends ASTVisitor {
 
 				mIsMMRequired = true;
 				if (id != null) {
+					// Rename the ID according to multiparse rules
 					final String rslvId = mSymTab.applyMultiparseRenaming(expression.getContainingFilename(), id);
 					final IASTNode function = mFunctionTable.get(rslvId);
-					if (function != null && mTemporarySymbolTable.get(rslvId) == null) { // id is the name of a function
-																							// and
-																							// not shadowed here
-						// Rename the ID according to multiparse rules
+					if (function != null && mTemporarySymbolTable.get(rslvId) == null) {
+						// id is the name of a function
+						// and not shadowed here
 						updateFunctionPointers(rslvId, function);
-						// functionPointers.put(id, function);
 						updateFunctionToIndex(rslvId);
 					} else {
 						mVariablesOnHeap.add(get(rslvId, loc));
@@ -223,7 +224,6 @@ public class PreRunner extends ASTVisitor {
 			// if the identifier refers to an array and is used in a functioncall, the Array has to go on the heap
 			if (d instanceof IASTArrayDeclarator && expression.getParent() instanceof IASTFunctionCallExpression) {
 				mVariablesOnHeap.add(d);
-
 			}
 		} else if (expression instanceof IASTFieldReference) {
 			// TODO

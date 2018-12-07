@@ -35,6 +35,7 @@ import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.contai
 import de.uni_freiburg.informatik.ultimate.core.model.preferences.IPreferenceProvider;
 import de.uni_freiburg.informatik.ultimate.plugins.generator.cacsl2boogietranslator.TranslationMode;
 import de.uni_freiburg.informatik.ultimate.plugins.generator.cacsl2boogietranslator.preferences.CACSLPreferenceInitializer;
+import de.uni_freiburg.informatik.ultimate.plugins.generator.cacsl2boogietranslator.preferences.CACSLPreferenceInitializer.FloatingPointRoundingMode;
 import de.uni_freiburg.informatik.ultimate.plugins.generator.cacsl2boogietranslator.preferences.CACSLPreferenceInitializer.MemoryModel;
 import de.uni_freiburg.informatik.ultimate.plugins.generator.cacsl2boogietranslator.preferences.CACSLPreferenceInitializer.PointerCheckMode;
 import de.uni_freiburg.informatik.ultimate.plugins.generator.cacsl2boogietranslator.preferences.CACSLPreferenceInitializer.PointerIntegerConversion;
@@ -72,6 +73,9 @@ public final class TranslationSettings {
 	private final boolean mCheckAllocationPurity;
 	private final boolean mCheckMemoryLeakInMain;
 	private final boolean mCheckSignedIntegerBounds;
+	private final boolean mUseConstantArrays;
+	private final boolean mEnableFesetround;
+	private final FloatingPointRoundingMode mInitialRoundingMode;
 
 	public TranslationSettings(final IPreferenceProvider ups) {
 		mCheckSignedIntegerBounds = ups.getBoolean(CACSLPreferenceInitializer.LABEL_CHECK_SIGNED_INTEGER_BOUNDS);
@@ -111,6 +115,11 @@ public final class TranslationSettings {
 		mBitvectorTranslation = ups.getBoolean(CACSLPreferenceInitializer.LABEL_BITVECTOR_TRANSLATION);
 		mOverapproximateFloatingPointOperations =
 				ups.getBoolean(CACSLPreferenceInitializer.LABEL_OVERAPPROXIMATE_FLOATS);
+		mUseConstantArrays = ups.getBoolean(CACSLPreferenceInitializer.LABEL_USE_CONSTANT_ARRAYS);
+
+		mEnableFesetround = ups.getBoolean(CACSLPreferenceInitializer.LABEL_FP_ROUNDING_MODE_ENABLE_FESETROUND);
+		mInitialRoundingMode =
+				ups.getEnum(CACSLPreferenceInitializer.LABEL_FP_ROUNDING_MODE_INITIAL, FloatingPointRoundingMode.class);
 	}
 
 	public PointerIntegerConversion getPointerIntegerCastMode() {
@@ -224,6 +233,18 @@ public final class TranslationSettings {
 
 	public boolean checkSignedIntegerBounds() {
 		return mCheckSignedIntegerBounds;
+	}
+
+	public boolean useConstantArrays() {
+		return mUseConstantArrays;
+	}
+
+	public boolean isFesetroundEnabled() {
+		return mEnableFesetround;
+	}
+
+	public FloatingPointRoundingMode getInitialRoundingMode() {
+		return mInitialRoundingMode;
 	}
 
 }

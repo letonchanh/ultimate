@@ -26,6 +26,7 @@
  */
 package de.uni_freiburg.informatik.ultimate.plugins.generator.cacsl2boogietranslator.preferences;
 
+import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.expressiontranslation.BitvectorTranslation.SmtRoundingMode;
 import de.uni_freiburg.informatik.ultimate.core.lib.preferences.UltimatePreferenceInitializer;
 import de.uni_freiburg.informatik.ultimate.core.model.preferences.BaseUltimatePreferenceItem.PreferenceType;
 import de.uni_freiburg.informatik.ultimate.core.model.preferences.UltimatePreferenceItem;
@@ -81,6 +82,19 @@ public class CACSLPreferenceInitializer extends UltimatePreferenceInitializer {
 					+ "havoc. The resulting analysis will be fast and sound, but the result is UNKNOWN if such an "
 					+ "operation occurs in a counterexample.";
 	public static final String LABEL_FP_TO_IEEE_BV_EXTENSION = "Use Z3's non-standard fp.to_ieee_bv extension";
+
+	public static final String LABEL_FP_ROUNDING_MODE_INITIAL = "Initial rounding mode";
+	private static final String DESC_FP_ROUNDING_MODE_INITIAL =
+			"Use the specified rounding mode as initial float rounding mode.";
+	private static final FloatingPointRoundingMode DEF_FP_ROUNDING_MODE_INITIAL =
+			FloatingPointRoundingMode.FE_TONEAREST;
+
+	public static final String LABEL_FP_ROUNDING_MODE_ENABLE_FESETROUND = "Let fesetround change the rounding mode";
+	private static final boolean DEF_FP_ROUNDING_MODE_ENABLE_FESETROUND = false;
+	private static final String DESC_FP_ROUNDING_MODE_ENABLE_FESETROUND =
+			"If enabled, fesetround can change the current rounding mode. If disabled, fesetround does nothing and "
+					+ "always returns non-zero (no success).";
+
 	public static final String LABEL_SMT_BOOL_ARRAYS_WORKAROUND = "SMT bool arrays workaround";
 
 	// typesize stuff
@@ -100,6 +114,9 @@ public class CACSLPreferenceInitializer extends UltimatePreferenceInitializer {
 	// public static final String LABEL_EXPLICIT_TYPESIZE_CHAR32 = "sizeof char32";
 	public static final String LABEL_SIGNEDNESS_CHAR = "signedness of char";
 	public static final String LABEL_CHECK_ALLOCATION_PURITY = "Check allocation purity";
+	public static final String LABEL_USE_CONSTANT_ARRAYS = "Use constant arrays";
+	private static final String DESC_USE_CONSTANT_ARRAYS =
+			"Use SMT constant arrays for default initialization of variables.";
 
 	public enum PointerCheckMode {
 		IGNORE, ASSUME, ASSERTandASSUME
@@ -127,6 +144,38 @@ public class CACSLPreferenceInitializer extends UltimatePreferenceInitializer {
 
 	public enum PointerIntegerConversion {
 		Overapproximate, NonBijectiveMapping, NutzBijection, IdentityAxiom,
+	}
+
+	public enum FloatingPointRoundingMode {
+		/**
+		 * rounding towards negative infinity
+		 */
+		FE_DOWNWARD(SmtRoundingMode.RTN),
+		/**
+		 * rounding towards nearest integer
+		 *
+		 * TODO: Is RNE really the correct SMT rounding mode?
+		 */
+		FE_TONEAREST(SmtRoundingMode.RNE),
+		/**
+		 * rounding towards zero
+		 */
+		FE_TOWARDZERO(SmtRoundingMode.RTZ),
+		/**
+		 * rounding towards positive infinity
+		 */
+		FE_UPWARD(SmtRoundingMode.RTP);
+
+		private final SmtRoundingMode mSmtRoundingMode;
+
+		private FloatingPointRoundingMode(final SmtRoundingMode smtRoundingMode) {
+			mSmtRoundingMode = smtRoundingMode;
+		}
+
+		public SmtRoundingMode getSmtRoundingMode() {
+			return mSmtRoundingMode;
+		}
+
 	}
 
 	public CACSLPreferenceInitializer() {
@@ -173,6 +222,13 @@ public class CACSLPreferenceInitializer extends UltimatePreferenceInitializer {
 				new UltimatePreferenceItem<>(LABEL_OVERAPPROXIMATE_FLOATS, false, DESC_OVERAPPROXIMATE_FLOATS,
 						PreferenceType.Boolean),
 				new UltimatePreferenceItem<>(LABEL_FP_TO_IEEE_BV_EXTENSION, false, PreferenceType.Boolean),
+
+				new UltimatePreferenceItem<>(LABEL_FP_ROUNDING_MODE_ENABLE_FESETROUND,
+						DEF_FP_ROUNDING_MODE_ENABLE_FESETROUND, DESC_FP_ROUNDING_MODE_ENABLE_FESETROUND,
+						PreferenceType.Boolean),
+				new UltimatePreferenceItem<>(LABEL_FP_ROUNDING_MODE_INITIAL, DEF_FP_ROUNDING_MODE_INITIAL,
+						DESC_FP_ROUNDING_MODE_INITIAL, PreferenceType.Combo, FloatingPointRoundingMode.values()),
+
 				new UltimatePreferenceItem<>(LABEL_SMT_BOOL_ARRAYS_WORKAROUND, true, PreferenceType.Boolean),
 
 				// typesize stuff
@@ -193,6 +249,8 @@ public class CACSLPreferenceInitializer extends UltimatePreferenceInitializer {
 				// new UltimatePreferenceItem<Integer>(
 				// LABEL_EXPLICIT_TYPESIZE_CHAR32, 4, PreferenceType.Integer),
 				new UltimatePreferenceItem<>(LABEL_SIGNEDNESS_CHAR, Signedness.SIGNED, PreferenceType.Combo,
-						Signedness.values()), };
+						Signedness.values()),
+				new UltimatePreferenceItem<>(LABEL_USE_CONSTANT_ARRAYS, false, DESC_USE_CONSTANT_ARRAYS,
+						PreferenceType.Boolean), };
 	}
 }

@@ -61,6 +61,8 @@ import de.uni_freiburg.informatik.ultimate.logic.Sort;
 import de.uni_freiburg.informatik.ultimate.logic.TermVariable;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.DefaultIcfgSymbolTable;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.IIcfgSymbolTable;
+import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.SmtFunctionDefinition;
+import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.SmtFunctionDefinition.IllegalSmtFunctionUsageException;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.variables.ILocalProgramVar;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.variables.IProgramConst;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.variables.IProgramNonOldVar;
@@ -89,7 +91,12 @@ public class Boogie2SmtSymbolTable
 	 * </ul>
 	 *
 	 */
-	static final String ID_BUILTIN = "builtin";
+	public static final String ID_BUILTIN = "builtin";
+
+	/**
+	 * Identifier of attribute that we use to declare a function symbol that should be mapped to an SMT term
+	 */
+	public static final String ID_SMTDEFINED = "smtdefined";
 
 	private static final String ID_INDICES = "indices";
 
@@ -113,11 +120,12 @@ public class Boogie2SmtSymbolTable
 	private final Map<ApplicationTerm, BoogieConst> mSmtConst2BoogieConst = new HashMap<>();
 	private final Set<IProgramNonOldVar> mCfgAuxVars;
 
-	final Map<String, String> mBoogieFunction2SmtFunction = new HashMap<>();
-	final Map<String, String> mSmtFunction2BoogieFunction = new HashMap<>();
-	final Map<String, Map<String, Expression[]>> mBoogieFunction2Attributes = new HashMap<>();
+	private final Map<String, String> mBoogieFunction2SmtFunction = new HashMap<>();
+	private final Map<String, String> mSmtFunction2BoogieFunction = new HashMap<>();
+	private final Map<String, SmtFunctionDefinition> mSmtFunction2SmtFunctionDefinition = new HashMap<>();
+	private final Map<String, Map<String, Expression[]>> mBoogieFunction2Attributes = new HashMap<>();
 
-	final DefaultIcfgSymbolTable mICfgSymbolTable = new DefaultIcfgSymbolTable();
+	private final DefaultIcfgSymbolTable mICfgSymbolTable = new DefaultIcfgSymbolTable();
 
 	public Boogie2SmtSymbolTable(final BoogieDeclarations boogieDeclarations, final ManagedScript script,
 			final TypeSortTranslator typeSortTranslator, final Set<IProgramNonOldVar> cfgAuxVars) {
@@ -324,11 +332,16 @@ public class Boogie2SmtSymbolTable
 		final String id = funcdecl.getIdentifier();
 		mBoogieFunction2Attributes.put(id, attributes);
 		final String attributeDefinedIdentifier = checkForAttributeDefinedIdentifier(attributes, ID_BUILTIN);
-		String smtID;
+		final String smtDefinedBody = checkForAttributeDefinedIdentifier(attributes, ID_SMTDEFINED);
+		final String smtID;
 		if (attributeDefinedIdentifier == null) {
 			smtID = Boogie2SMT.quoteId(id);
 		} else {
 			smtID = attributeDefinedIdentifier;
+			if (smtDefinedBody != null) {
+				throw new IllegalSmtFunctionUsageException(
+						id + " has " + ID_SMTDEFINED + " and " + ID_BUILTIN + " attributes");
+			}
 		}
 		int numParams = 0;
 		for (final VarList vl : funcdecl.getInParams()) {
@@ -337,6 +350,7 @@ public class Boogie2SmtSymbolTable
 		}
 
 		final Sort[] paramSorts = new Sort[numParams];
+		final String[] paramIds = new String[numParams];
 		int paramNr = 0;
 		for (final VarList vl : funcdecl.getInParams()) {
 			int ids = vl.getIdentifiers().length;
@@ -346,14 +360,24 @@ public class Boogie2SmtSymbolTable
 			final IBoogieType paramType = vl.getType().getBoogieType();
 			final Sort paramSort = mTypeSortTranslator.getSort(paramType, funcdecl);
 			for (int i = 0; i < ids; i++) {
-				paramSorts[paramNr++] = paramSort;
+				paramSorts[paramNr] = paramSort;
+				if (i < vl.getIdentifiers().length) {
+					paramIds[paramNr] = vl.getIdentifiers()[i];
+				} else {
+					paramIds[paramNr] = null;
+				}
+				paramNr++;
 			}
 		}
 		final IBoogieType resultType = funcdecl.getOutParam().getType().getBoogieType();
 		final Sort resultSort = mTypeSortTranslator.getSort(resultType, funcdecl);
 		if (attributeDefinedIdentifier == null) {
 			// no builtin function, we have to declare it
-			mScript.declareFun(this, smtID, paramSorts, resultSort);
+			final SmtFunctionDefinition smtFunctionDefinition = SmtFunctionDefinition.create(mScript.getScript(), smtID,
+					smtDefinedBody, paramIds, paramSorts, resultSort);
+			smtFunctionDefinition.defineOrDeclareFunction(mScript.getScript());
+			mSmtFunction2SmtFunctionDefinition.put(smtID, smtFunctionDefinition);
+
 		}
 		mBoogieFunction2SmtFunction.put(id, smtID);
 		mSmtFunction2BoogieFunction.put(smtID, id);
@@ -375,7 +399,7 @@ public class Boogie2SmtSymbolTable
 			final StringLiteral sl = (StringLiteral) values[0];
 			return sl.getValue();
 		}
-		throw new IllegalArgumentException("no single value attribute");
+		throw new IllegalArgumentException("Attribute has more than one argument or argument is not String: " + n);
 	}
 
 	/**
@@ -418,6 +442,10 @@ public class Boogie2SmtSymbolTable
 
 	public Map<String, String> getBoogieFunction2SmtFunction() {
 		return Collections.unmodifiableMap(mBoogieFunction2SmtFunction);
+	}
+
+	public Map<String, SmtFunctionDefinition> getSmtFunction2SmtFunctionDefinition() {
+		return Collections.unmodifiableMap(mSmtFunction2SmtFunctionDefinition);
 	}
 
 	private void declareGlobalVariables(final VariableDeclaration vardecl) {
@@ -740,5 +768,4 @@ public class Boogie2SmtSymbolTable
 	private static <V, T, K1, K2> Stream<T> getAll(final Map<K1, Map<K2, V>> map, final Function<V, T> fun) {
 		return map.entrySet().stream().flatMap(a -> a.getValue().entrySet().stream()).map(a -> fun.apply(a.getValue()));
 	}
-
 }

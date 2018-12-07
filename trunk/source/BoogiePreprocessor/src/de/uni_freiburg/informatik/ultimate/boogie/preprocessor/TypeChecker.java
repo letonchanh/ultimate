@@ -1,7 +1,7 @@
 /*
  * Copyright (C) 2008-2016 Daniel Dietsch (dietsch@informatik.uni-freiburg.de)
  * Copyright (C) 2008-2016 Jochen Hoenicke (hoenicke@informatik.uni-freiburg.de)
- * Copyright (C) 2018 Lars Nitkze (lars.nitzke@outlook.com)
+ * Copyright (C) 2018 Lars Nitkze (lars.nitzke@mailfence.com)
  * Copyright (C) 2015-2016 University of Freiburg
  *
  * This file is part of the ULTIMATE BoogiePreprocessor plug-in.
@@ -54,6 +54,7 @@ import de.uni_freiburg.informatik.ultimate.boogie.ast.ArrayStoreExpression;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.AssertStatement;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.AssignmentStatement;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.AssumeStatement;
+import de.uni_freiburg.informatik.ultimate.boogie.ast.AtomicStatement;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.Attribute;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.Axiom;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.BinaryExpression;
@@ -272,7 +273,7 @@ public class TypeChecker extends BaseObserver {
 					final BoogieType[] subst = new BoogieType[fs.getTypeArgCount()];
 					final Expression[] appArgs = app.getArguments();
 					if (appArgs.length != fs.getParamCount()) {
-						typeError(expr, "Type check failed (wrong number of indices): " + expr);
+						typeError(expr, "Type check failed (wrong number of arguments): " + expr);
 					} else {
 						for (int i = 0; i < appArgs.length; i++) {
 							final BoogieType t = typecheckExpression(appArgs[i]);
@@ -639,6 +640,8 @@ public class TypeChecker extends BaseObserver {
 				processLabels(labels, ((IfStatement) s).getElsePart());
 			} else if (s instanceof WhileStatement) {
 				processLabels(labels, ((WhileStatement) s).getBody());
+			} else if (s instanceof AtomicStatement) {
+				processLabels(labels, ((AtomicStatement) s).getBody());
 			}
 		}
 	}
@@ -724,6 +727,9 @@ public class TypeChecker extends BaseObserver {
 			outer.push("*");
 			typecheckBlock(outer, allLabels, whilestmt.getBody());
 			outer.pop();
+		} else if (statement instanceof AtomicStatement) {
+			final AtomicStatement atomicstmt = (AtomicStatement) statement;
+			typecheckBlock(outer, allLabels, atomicstmt.getBody());
 		} else if (statement instanceof CallStatement) {
 			final CallStatement call = (CallStatement) statement;
 			final ProcedureInfo procInfo = mDeclaredProcedures.get(call.getMethodName());
@@ -813,6 +819,8 @@ public class TypeChecker extends BaseObserver {
 			for (int i = 0; i < join.getLhs().length; i++) {
 				typecheckLeftHandSide(join.getLhs()[i]);
 			}
+		} else if (statement instanceof AtomicStatement) {
+			// Nothing to check (yet).
 		} else {
 			TypeCheckHelper.internalError("Not implemented: type checking for " + statement);
 		}

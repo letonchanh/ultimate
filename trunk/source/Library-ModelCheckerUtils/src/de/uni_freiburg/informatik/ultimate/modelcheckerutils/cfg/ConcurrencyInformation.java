@@ -28,9 +28,11 @@
 
 package de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg;
 
+import java.util.Collection;
 import java.util.Map;
 
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.structure.IIcfgForkTransitionThreadCurrent;
+import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.structure.IIcfgJoinTransitionThreadCurrent;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.structure.IcfgLocation;
 
 /**
@@ -41,22 +43,25 @@ import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.structure.IcfgL
 public class ConcurrencyInformation {
 
 	private final Map<IIcfgForkTransitionThreadCurrent<IcfgLocation>, ThreadInstance> mThreadInstanceMap;
+	private final Collection<IIcfgJoinTransitionThreadCurrent<IcfgLocation>> mJoinTransitions;
 
-
-
-	public ConcurrencyInformation(final Map<IIcfgForkTransitionThreadCurrent<IcfgLocation>, ThreadInstance> threadInstanceMap2) {
-		mThreadInstanceMap = threadInstanceMap2;
+	public ConcurrencyInformation(
+			final Map<IIcfgForkTransitionThreadCurrent<IcfgLocation>, ThreadInstance> threadInstanceMap,
+			final Collection<IIcfgJoinTransitionThreadCurrent<IcfgLocation>> joinTransitions) {
+		mThreadInstanceMap = threadInstanceMap;
+		mJoinTransitions = joinTransitions;
 	}
 
-
-
+	/**
+	 * Map is empty if program is not a concurrent program.
+	 */
 	public Map<IIcfgForkTransitionThreadCurrent<IcfgLocation>, ThreadInstance> getThreadInstanceMap() {
 		return mThreadInstanceMap;
 	}
 
-
-
-
+	public Collection<IIcfgJoinTransitionThreadCurrent<IcfgLocation>> getJoinTransitions() {
+		return mJoinTransitions;
+	}
 
 
 

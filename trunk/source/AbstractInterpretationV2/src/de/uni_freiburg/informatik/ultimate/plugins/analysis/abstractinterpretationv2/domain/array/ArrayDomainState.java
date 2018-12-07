@@ -35,12 +35,12 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.function.BinaryOperator;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
@@ -77,6 +77,7 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 	private final Set<IProgramVarOrConst> mVariables;
 	private Term mCachedTerm;
 	private EquivalenceFinder mEquivalenceFinder;
+	private Map<Segmentation, Segmentation> mSimplifiedSegmentations;
 
 	private ArrayDomainState(final STATE subState, final SegmentationMap segmentationMap,
 			final Set<IProgramVarOrConst> variables, final ArrayDomainToolkit<STATE> toolkit) {
@@ -84,6 +85,8 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 		mSegmentationMap = segmentationMap;
 		mToolkit = toolkit;
 		mVariables = variables;
+		mSimplifiedSegmentations = new HashMap<>();
+		assert checkSegmentationMap();
 	}
 
 	public ArrayDomainState(final STATE subState, final Set<IProgramVarOrConst> variables,
@@ -110,8 +113,7 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 			newVariables.add(v);
 			IProgramVarOrConst var = v;
 			while (var.getSort().isArraySort()) {
-				final IBoogieType valueType = mToolkit.getType(TypeUtils.getValueSort(var.getSort()));
-				final Pair<IProgramVar, Segmentation> pair = mToolkit.createTopSegmentation(valueType);
+				final Pair<IProgramVar, Segmentation> pair = mToolkit.createTopSegmentation(var.getSort());
 				newSegmentationMap.add(var, pair.getSecond());
 				var = pair.getFirst();
 			}
@@ -127,8 +129,7 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 		for (final IProgramVarOrConst v : auxVars) {
 			IProgramVarOrConst var = v;
 			while (var.getSort().isArraySort()) {
-				final IBoogieType valueType = mToolkit.getType(TypeUtils.getValueSort(var.getSort()));
-				final Pair<IProgramVar, Segmentation> pair = mToolkit.createTopSegmentation(valueType);
+				final Pair<IProgramVar, Segmentation> pair = mToolkit.createTopSegmentation(var.getSort());
 				newSegmentationMap.add(var, pair.getSecond());
 				var = pair.getFirst();
 			}
@@ -148,10 +149,10 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 		final Set<IProgramVarOrConst> newVariables = new HashSet<>(mVariables);
 		final Set<IProgramVarOrConst> nonArrayVars = new HashSet<>();
 		for (final IProgramVarOrConst v : variables) {
-			if (!mVariables.contains(v)) {
+			final boolean wasThere = newVariables.remove(v);
+			if (!wasThere) {
 				throw new UnsupportedOperationException("Unknown variable " + v);
 			}
-			newVariables.remove(v);
 			if (v.getSort().isArraySort()) {
 				newSegmentationMap.remove(v);
 			} else {
@@ -195,147 +196,177 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 	@Override
 	public ArrayDomainState<STATE> patch(final ArrayDomainState<STATE> dominator) {
 		final STATE newSubState = mSubState.patch(dominator.mSubState);
-		final Set<IProgramVarOrConst> oldArrays = mSegmentationMap.getArrays();
-		final Set<IProgramVarOrConst> dominatorArrays = dominator.mSegmentationMap.getArrays();
+		final Set<IProgramVarOrConst> oldArrays =
+				mVariables.stream().filter(x -> x.getSort().isArraySort()).collect(Collectors.toSet());
+		final Set<IProgramVarOrConst> dominatorArrays =
+				dominator.mVariables.stream().filter(x -> x.getSort().isArraySort()).collect(Collectors.toSet());
 		final Set<IProgramVarOrConst> overwrittenArrays = DataStructureUtils.intersection(oldArrays, dominatorArrays);
 		final Set<IProgramVarOrConst> newVariables = DataStructureUtils.union(mVariables, dominator.mVariables);
 		final ArrayDomainState<STATE> result =
-				new ArrayDomainState<>(newSubState, getSegmentationMap(), newVariables, mToolkit)
-						.removeVariables(overwrittenArrays);
-		result.mSegmentationMap.addAll(dominator.mSegmentationMap);
+				new ArrayDomainState<>(newSubState, getSegmentationMap(), newVariables, mToolkit);
+		result.mSegmentationMap.removeAll(overwrittenArrays);
+		result.mSegmentationMap.putAll(dominator.mSegmentationMap);
 		return result.removeUnusedAuxVars();
 	}
 
+	public Pair<Segmentation, ArrayDomainState<STATE>> unionSegmentations(final List<Segmentation> segmentations,
+			final Sort sort) {
+		Pair<Segmentation, ArrayDomainState<STATE>> result = new Pair<>(segmentations.get(0), this);
+		for (int i = 1; i < segmentations.size(); i++) {
+			result = result.getSecond().applyOperatorToSegmentations(result.getFirst(), segmentations.get(i), sort,
+					STATE::union);
+		}
+		return result;
+	}
+
 	public Pair<Segmentation, ArrayDomainState<STATE>> intersectSegmentations(final Segmentation s1,
-			final Segmentation s2) {
-		final Script script = mToolkit.getScript();
-		final List<IProgramVar> bounds = new ArrayList<>();
-		final List<IProgramVar> values = new ArrayList<>();
-		final IProgramVar minBound = mToolkit.getMinBound();
-		final IProgramVar maxBound = mToolkit.getMaxBound();
-		bounds.add(minBound);
-		final IBoogieType valueType = mToolkit.getType(s1.getValue(0).getSort());
-		final IBoogieType boundType = mToolkit.getType(s1.getBound(1).getSort());
-		final IProgramVar v0 = mToolkit.createValueVar(valueType);
-		values.add(v0);
+			final Segmentation s2, final Sort sort) {
+		return applyOperatorToSegmentations(s1, s2, sort, STATE::intersect);
+	}
+
+	private Pair<Segmentation, ArrayDomainState<STATE>> applyOperatorToSegmentations(final Segmentation s1,
+			final Segmentation s2, final Sort sort, final BinaryOperator<STATE> operator) {
+		final UnificationResult unificationResult = unify(this, s1, s2);
+		final ArrayDomainState<STATE> firstState = unificationResult.getFirstState();
+		final ArrayDomainState<STATE> secondState = unificationResult.getSecondState();
+		final EqSegmentationConversionResult result =
+				firstState.convertEqClassSegmentation(secondState, unificationResult.getSegmentation(), sort);
+		final Map<IProgramVar, Segmentation> newSegmentations = result.getNewSegmentations();
+		final Set<IProgramVarOrConst> newVariables = new HashSet<>(result.getNewVariables());
+		final Set<IProgramVarOrConst> removeVariables1 = new HashSet<>(result.getRemoveVariablesFirstState());
+		final Set<IProgramVarOrConst> removeVariables2 = new HashSet<>(result.getRemoveVariablesSecondState());
+		final List<Term> constraints = new ArrayList<>(result.getConstraints());
+		for (final Entry<IProgramVar, EqClassSegmentation> entry : unificationResult.getAuxVarSegmentations()
+				.entrySet()) {
+			final IProgramVar var = entry.getKey();
+			final EqSegmentationConversionResult result2 =
+					firstState.convertEqClassSegmentation(secondState, entry.getValue(), var.getSort());
+			newSegmentations.put(var, result2.getSegmentation());
+			newSegmentations.putAll(result2.getNewSegmentations());
+			constraints.addAll(result2.getConstraints());
+			newVariables.addAll(result2.getNewVariables());
+			newVariables.addAll(result2.getRemoveVariablesFirstState());
+			newVariables.addAll(result2.getRemoveVariablesSecondState());
+		}
+		final STATE intersection = operator.apply(firstState.getSubState().removeVariables(removeVariables1),
+				secondState.getSubState().removeVariables(removeVariables2));
+		final STATE newSubState = mToolkit.handleAssumptionBySubdomain(intersection.addVariables(newVariables),
+				SmtUtils.and(mToolkit.getScript(), constraints));
+		final SegmentationMap newSegmentationMap = firstState.getSegmentationMap();
+		for (final Entry<IProgramVar, Segmentation> entry : newSegmentations.entrySet()) {
+			newSegmentationMap.put(entry.getKey(), entry.getValue());
+		}
+		return new Pair<>(result.getSegmentation(), firstState.updateState(newSubState, newSegmentationMap));
+	}
+
+	private EqSegmentationConversionResult convertEqClassSegmentation(final ArrayDomainState<STATE> otherState,
+			final EqClassSegmentation eqClassSegmentation, final Sort sort) {
+		final IBoogieType boundType = mToolkit.getType(TypeUtils.getIndexSort(sort));
+		final IBoogieType valueType = mToolkit.getType(TypeUtils.getValueSort(sort));
+		final List<IProgramVar> newBounds = new ArrayList<>();
+		newBounds.add(mToolkit.getMinBound());
+		final List<IProgramVar> newValues = new ArrayList<>();
+		final List<IProgramVarOrConst> newVariables = new ArrayList<>();
 		final List<Term> constraints = new ArrayList<>();
-		constraints.add(mToolkit.connstructEquivalentConstraint(v0, s1.getValue(0), getSubTerm()));
-		constraints.add(mToolkit.connstructEquivalentConstraint(v0, s2.getValue(0), getSubTerm()));
-		int idx1 = 1;
-		int idx2 = 1;
-		// TODO: Do we need new bounds here?
-		while (idx1 < s1.size() && idx2 < s2.size()) {
-			final IProgramVar b1 = s1.getBound(idx1);
-			final IProgramVar b2 = s2.getBound(idx2);
-			final IProgramVar v1 = s1.getValue(idx1);
-			final IProgramVar v2 = s2.getValue(idx2);
-			final IProgramVar v1Old = s1.getValue(idx1 - 1);
-			final IProgramVar v2Old = s2.getValue(idx2 - 1);
-			final Term t1 = b1.getTermVariable();
-			final Term t2 = b2.getTermVariable();
-			if (mSubState.evaluate(script, SmtUtils.binaryEquality(script, t1, t2)) == EvalResult.TRUE) {
-				final IProgramVar b = mToolkit.createBoundVar(boundType);
-				final IProgramVar v = mToolkit.createValueVar(valueType);
-				bounds.add(b);
-				values.add(v);
-				constraints.add(mToolkit.connstructEquivalentConstraint(b, b1, getSubTerm()));
-				constraints.add(mToolkit.connstructEquivalentConstraint(v, v1, getSubTerm()));
-				constraints.add(mToolkit.connstructEquivalentConstraint(v, v2, getSubTerm()));
-				idx1++;
-				idx2++;
-			} else if (mSubState.evaluate(script, SmtUtils.leq(script, t1, t2)) == EvalResult.TRUE) {
-				final IProgramVar b = mToolkit.createBoundVar(boundType);
-				final IProgramVar v = mToolkit.createValueVar(valueType);
-				bounds.add(b);
-				values.add(v);
-				constraints.add(mToolkit.connstructEquivalentConstraint(b, b1, getSubTerm()));
-				constraints.add(mToolkit.connstructEquivalentConstraint(v, v1, getSubTerm()));
-				constraints.add(mToolkit.connstructEquivalentConstraint(v, v2Old, getSubTerm()));
-				idx1++;
-			} else if (mSubState.evaluate(script, SmtUtils.geq(script, t1, t2)) == EvalResult.TRUE) {
-				final IProgramVar b = mToolkit.createBoundVar(boundType);
-				final IProgramVar v = mToolkit.createValueVar(valueType);
-				bounds.add(b);
-				values.add(v);
-				constraints.add(mToolkit.connstructEquivalentConstraint(b, b2, getSubTerm()));
-				constraints.add(mToolkit.connstructEquivalentConstraint(v, v1Old, getSubTerm()));
-				constraints.add(mToolkit.connstructEquivalentConstraint(v, v2, getSubTerm()));
-				idx2++;
-			} else {
-				final IProgramVar bLow = mToolkit.createBoundVar(boundType);
-				final IProgramVar bHigh = mToolkit.createBoundVar(boundType);
-				final IProgramVar vLow = mToolkit.createValueVar(valueType);
-				final IProgramVar vHigh = mToolkit.createValueVar(valueType);
-				bounds.add(bLow);
-				bounds.add(bHigh);
-				values.add(vLow);
-				values.add(vHigh);
-				// Bound constraints
-				final TermVariable lowTv = bLow.getTermVariable();
-				final TermVariable highTv = bHigh.getTermVariable();
-				constraints.add(SmtUtils.leq(script, lowTv, b1.getTermVariable()));
-				constraints.add(SmtUtils.leq(script, lowTv, b2.getTermVariable()));
-				if (idx1 > 1) {
-					constraints.add(SmtUtils.leq(script, lowTv, s1.getBound(idx1 - 1).getTermVariable()));
-				}
-				if (idx2 > 1) {
-					constraints.add(SmtUtils.leq(script, lowTv, s2.getBound(idx2 - 1).getTermVariable()));
-				}
-				constraints.add(SmtUtils.leq(script, highTv, b1.getTermVariable()));
-				constraints.add(SmtUtils.leq(script, highTv, b2.getTermVariable()));
-				if (idx1 + 1 < s1.size()) {
-					constraints.add(SmtUtils.leq(script, highTv, s1.getBound(idx1 + 1).getTermVariable()));
-				}
-				if (idx2 + 1 < s2.size()) {
-					constraints.add(SmtUtils.leq(script, highTv, s2.getBound(idx2 + 1).getTermVariable()));
-				}
-				// Value constraints
-				constraints.add(SmtUtils.or(script, connstructEquivalentConstraints(vLow, Arrays.asList(v1, v1Old))));
-				constraints.add(SmtUtils.or(script, connstructEquivalentConstraints(vLow, Arrays.asList(v2, v2Old))));
-				constraints.add(mToolkit.connstructEquivalentConstraint(vHigh, v1, getSubTerm()));
-				constraints.add(mToolkit.connstructEquivalentConstraint(vHigh, v2, getSubTerm()));
-				idx1++;
-				idx2++;
+		final Script script = mToolkit.getScript();
+		final Set<IProgramVarOrConst> removedVarsThis = new HashSet<>();
+		final Set<IProgramVarOrConst> removedVarsOther = new HashSet<>();
+		final Map<IProgramVar, Segmentation> newSegmentations = new HashMap<>();
+		for (final Set<Term> eqClass : eqClassSegmentation.getBounds()) {
+			final IProgramVar newBoundVar = mToolkit.createBoundVar(boundType);
+			newVariables.add(newBoundVar);
+			newBounds.add(newBoundVar);
+			if (!eqClass.isEmpty()) {
+				constraints
+						.add(SmtUtils.binaryEquality(script, newBoundVar.getTermVariable(), eqClass.iterator().next()));
 			}
 		}
-		// Insert the remaining bounds and values
-		while (idx1 < s1.size()) {
-			final IProgramVar newValue = mToolkit.createValueVar(valueType);
-			final IProgramVar newBound = mToolkit.createBoundVar(boundType);
-			bounds.add(newBound);
-			values.add(newValue);
-			final IProgramVar value1 = s1.getValue(idx1);
-			final IProgramVar value2 = s2.getValue(s2.size() - 1);
-			constraints.add(mToolkit.connstructEquivalentConstraint(newBound, s1.getBound(idx1), getSubTerm()));
-			constraints.addAll(connstructEquivalentConstraints(newValue, Arrays.asList(value1, value2)));
-			idx1++;
-
+		final List<IProgramVar> valuesThis = eqClassSegmentation.getFirstValues();
+		final List<IProgramVar> valuesOther = eqClassSegmentation.getSecondValues();
+		for (int i = 0; i < valuesThis.size(); i++) {
+			final IProgramVar thisValue = valuesThis.get(i);
+			final IProgramVar otherValue = valuesOther.get(i);
+			if (thisValue != null && otherValue != null) {
+				if (!thisValue.equals(otherValue)) {
+					throw new InvalidParameterException("Unification should have returned the same value here.");
+				}
+				newValues.add(thisValue);
+			} else if (thisValue != null) {
+				final IProgramVar newValueVar = mToolkit.createValueVar(valueType);
+				final LinkedList<IProgramVar> newVarsToProject = new LinkedList<>();
+				final LinkedList<IProgramVar> oldVarsToProject = new LinkedList<>();
+				newVarsToProject.add(newValueVar);
+				oldVarsToProject.add(thisValue);
+				newValues.add(newValueVar);
+				while (!newVarsToProject.isEmpty()) {
+					final IProgramVar newVar = newVarsToProject.remove();
+					final IProgramVar oldVar = oldVarsToProject.remove();
+					if (newVar.getSort().isArraySort()) {
+						final Map<IProgramVarOrConst, IProgramVarOrConst> old2newVars = new HashMap<>();
+						final Segmentation s = getSegmentation(oldVar);
+						for (final IProgramVar b : s.getBounds()) {
+							final IProgramVar newBound = mToolkit.createBoundVar(mToolkit.getType(b.getSort()));
+							oldVarsToProject.add(b);
+							newVarsToProject.add(newBound);
+							old2newVars.put(b, newBound);
+						}
+						for (final IProgramVar v : s.getValues()) {
+							final IProgramVar newValue = mToolkit.createValueVar(mToolkit.getType(v.getSort()));
+							oldVarsToProject.add(v);
+							newVarsToProject.add(newValue);
+							old2newVars.put(v, newValue);
+						}
+						newSegmentations.put(newVar, createFreshSegmentationCopy(s, old2newVars));
+					} else {
+						constraints.add(project(newVar, oldVar, getSubTerm()));
+						newVariables.add(newVar);
+						removedVarsThis.add(oldVar);
+					}
+				}
+			} else if (otherValue != null) {
+				final IProgramVar newValueVar = mToolkit.createValueVar(valueType);
+				final LinkedList<IProgramVar> newVarsToProject = new LinkedList<>();
+				final LinkedList<IProgramVar> oldVarsToProject = new LinkedList<>();
+				newVarsToProject.add(newValueVar);
+				oldVarsToProject.add(otherValue);
+				newValues.add(newValueVar);
+				while (!newVarsToProject.isEmpty()) {
+					final IProgramVar newVar = newVarsToProject.remove();
+					final IProgramVar oldVar = oldVarsToProject.remove();
+					if (newVar.getSort().isArraySort()) {
+						final Map<IProgramVarOrConst, IProgramVarOrConst> old2newVars = new HashMap<>();
+						final Segmentation s = otherState.getSegmentation(oldVar);
+						for (final IProgramVar b : s.getBounds()) {
+							final IProgramVar newBound = mToolkit.createBoundVar(mToolkit.getType(b.getSort()));
+							oldVarsToProject.add(b);
+							newVarsToProject.add(newBound);
+							old2newVars.put(b, newBound);
+						}
+						for (final IProgramVar v : s.getValues()) {
+							final IProgramVar newValue = mToolkit.createValueVar(mToolkit.getType(v.getSort()));
+							oldVarsToProject.add(v);
+							newVarsToProject.add(newValue);
+							old2newVars.put(v, newValue);
+						}
+						newSegmentations.put(newVar, createFreshSegmentationCopy(s, old2newVars));
+					} else {
+						constraints.add(project(newVar, oldVar, otherState.getSubTerm()));
+						newVariables.add(newVar);
+						removedVarsOther.add(oldVar);
+					}
+				}
+			} else {
+				final IProgramVar newValueVar = mToolkit.createValueVar(valueType);
+				newVariables.add(newValueVar);
+				newValues.add(newValueVar);
+			}
 		}
-		while (idx2 < s2.size()) {
-			final IProgramVar newValue = mToolkit.createValueVar(valueType);
-			final IProgramVar newBound = mToolkit.createBoundVar(boundType);
-			bounds.add(newBound);
-			values.add(newValue);
-			final IProgramVar value1 = s1.getValue(s1.size() - 1);
-			final IProgramVar value2 = s2.getValue(idx2);
-			constraints.add(mToolkit.connstructEquivalentConstraint(newBound, s2.getBound(idx2), getSubTerm()));
-			constraints.addAll(connstructEquivalentConstraints(newValue, Arrays.asList(value1, value2)));
-			idx2++;
-
-		}
-		bounds.add(maxBound);
-		final List<IProgramVarOrConst> newVars = new ArrayList<>();
-		newVars.addAll(bounds);
-		newVars.remove(minBound);
-		newVars.remove(maxBound);
-		newVars.addAll(values);
-		final STATE newState = mToolkit.handleAssumptionBySubdomain(mSubState.addVariables(newVars),
-				SmtUtils.and(script, constraints));
-		return new Pair<>(new Segmentation(bounds, values), updateState(newState));
+		newBounds.add(mToolkit.getMaxBound());
+		return new EqSegmentationConversionResult(new Segmentation(newBounds, newValues), newSegmentations, constraints,
+				newVariables, removedVarsThis, removedVarsOther);
 	}
 
 	@Override
-	// TODO: Add support for multidimensional arrays (using unification?)
 	public ArrayDomainState<STATE> intersect(final ArrayDomainState<STATE> other) {
 		if (isBottom()) {
 			return this;
@@ -343,7 +374,7 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 		if (other.isBottom()) {
 			return other;
 		}
-		final ArrayDomainState<STATE> otherState = other.renameSegmentations(this, true);
+		final ArrayDomainState<STATE> otherState = other.renameSegmentations(this);
 		final Set<IProgramVarOrConst> auxVars1 = new HashSet<>(mSegmentationMap.getAuxVars());
 		final Set<IProgramVarOrConst> auxVars2 = new HashSet<>(otherState.mSegmentationMap.getAuxVars());
 		final STATE state1 = mSubState.addVariables(DataStructureUtils.difference(auxVars2, auxVars1));
@@ -371,8 +402,8 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 			}
 			final Set<Segmentation> segmentations = new HashSet<>();
 			for (final IProgramVarOrConst eq : equivalenceClass) {
-				segmentations.add(mSegmentationMap.getSegmentation(eq));
-				segmentations.add(otherState.mSegmentationMap.getSegmentation(eq));
+				segmentations.add(getSegmentation(eq));
+				segmentations.add(otherState.getSegmentation(eq));
 			}
 			final Iterator<Segmentation> iterator = segmentations.iterator();
 			final Segmentation firstSegmentation = iterator.next();
@@ -381,12 +412,13 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 				result.mSegmentationMap.add(v, firstSegmentation);
 				continue;
 			}
+			final Sort sort = v.getSort();
 			Pair<Segmentation, ArrayDomainState<STATE>> intersectionResult =
-					result.intersectSegmentations(firstSegmentation, iterator.next());
+					result.intersectSegmentations(firstSegmentation, iterator.next(), sort);
 			Segmentation segmentation = intersectionResult.getFirst();
 			result = intersectionResult.getSecond();
 			while (iterator.hasNext()) {
-				intersectionResult = result.intersectSegmentations(segmentation, iterator.next());
+				intersectionResult = result.intersectSegmentations(segmentation, iterator.next(), sort);
 				result = intersectionResult.getSecond();
 				segmentation = intersectionResult.getFirst();
 			}
@@ -395,19 +427,17 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 		return result.simplify();
 	}
 
-	private ArrayDomainState<STATE> renameSegmentations(final ArrayDomainState<STATE> other,
-			final boolean tryToKeepOld) {
+	private ArrayDomainState<STATE> renameSegmentations(final ArrayDomainState<STATE> other) {
 		final SegmentationMap newSegmentationMap = getSegmentationMap();
 		final Map<IProgramVarOrConst, IProgramVarOrConst> old2newVars = new HashMap<>();
 		final Set<Segmentation> processedSegmentations = new HashSet<>();
 		for (final IProgramVarOrConst array : mSegmentationMap.getArrays()) {
-			final Segmentation segmentation = mSegmentationMap.getSegmentation(array);
+			final Segmentation segmentation = getSegmentation(array);
 			if (processedSegmentations.contains(segmentation)) {
 				continue;
 			}
 			processedSegmentations.add(segmentation);
-			if (tryToKeepOld && getEqualArrays(array).stream()
-					.anyMatch(x -> other.mSegmentationMap.getSegmentation(x).equals(segmentation))) {
+			if (getEqualArrays(array).stream().anyMatch(x -> other.getSegmentation(x).equals(segmentation))) {
 				continue;
 			}
 			newSegmentationMap.put(array, createFreshSegmentationCopy(segmentation, old2newVars));
@@ -439,8 +469,10 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 		return (IProgramVar) old2newVars.get(oldVar);
 	}
 
-	private UnificationResult<STATE> unify(final ArrayDomainState<STATE> other, final Segmentation segmentation,
+	private UnificationResult unify(final ArrayDomainState<STATE> other, final Segmentation segmentation,
 			final Segmentation otherSegmentation) {
+		assert segmentation.getValue(0).getSort()
+				.equals(otherSegmentation.getValue(0).getSort()) : "The segmentations have different sorts.";
 		final Script script = mToolkit.getScript();
 		final Segmentation simplifiedThisSegmentation = simplifySegmentation(segmentation);
 		final Segmentation simplifiedOtherSegmentation = other.simplifySegmentation(otherSegmentation);
@@ -486,8 +518,8 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 		final IProgramVar newValue0 = mToolkit.createValueVar(valueType);
 		newValuesThis.add(newValue0);
 		newValuesOther.add(newValue0);
-		addEquality(newValue0, thisValue0, constraintsThis, newSegmentationMapThis);
-		addEquality(newValue0, otherValue0, constraintsOther, newSegmentationMapOther);
+		addEquivalence(newValue0, thisValue0, constraintsThis, newSegmentationMapThis);
+		addEquivalence(newValue0, otherValue0, constraintsOther, newSegmentationMapOther);
 		int idxThis = 1;
 		int idxOther = 1;
 		while (idxThis < valuesThis.size() && idxOther < valuesOther.size()) {
@@ -505,11 +537,11 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 				// case 2
 				newBounds.add(eqClassOther);
 				newValuesOther.add(newValue);
-				other.addEquality(newValue, otherValue, constraintsOther, newSegmentationMapOther);
+				other.addEquivalence(newValue, otherValue, constraintsOther, newSegmentationMapOther);
 				if (!DataStructureUtils.haveNonEmptyIntersection(eqClassThis, boundsOtherTodo)) {
 					// case 1 + 2.1
 					newValuesThis.add(newValue);
-					addEquality(newValue, thisValue, constraintsThis, newSegmentationMapThis);
+					addEquivalence(newValue, thisValue, constraintsThis, newSegmentationMapThis);
 					idxThis++;
 				} else {
 					// case 2.2
@@ -520,11 +552,11 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 				// case 3
 				newBounds.add(eqClassThis);
 				newValuesThis.add(newValue);
-				addEquality(newValue, thisValue, constraintsThis, newSegmentationMapThis);
+				addEquivalence(newValue, thisValue, constraintsThis, newSegmentationMapThis);
 				if (!DataStructureUtils.haveNonEmptyIntersection(eqClassOther, boundsThisTodo)) {
 					// case 3.1
 					newValuesOther.add(newValue);
-					other.addEquality(newValue, otherValue, constraintsOther, newSegmentationMapOther);
+					other.addEquivalence(newValue, otherValue, constraintsOther, newSegmentationMapOther);
 					idxOther++;
 				} else {
 					// case 3.2
@@ -542,22 +574,22 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 					// case 4.1
 					newValuesThis.add(newValue);
 					newValuesOther.add(newValue);
-					addEquality(newValue, thisValue, constraintsThis, newSegmentationMapThis);
-					other.addEquality(newValue, otherValue, constraintsOther, newSegmentationMapOther);
+					addEquivalence(newValue, thisValue, constraintsThis, newSegmentationMapThis);
+					other.addEquivalence(newValue, otherValue, constraintsOther, newSegmentationMapOther);
 					idxThis++;
 					idxOther++;
 				} else if (intersectionWithNextThis.isEmpty()) {
 					// case 4.2
 					newValuesThis.add(newValue);
 					newValuesOther.add(null);
-					addEquality(newValue, thisValue, constraintsThis, newSegmentationMapThis);
+					addEquivalence(newValue, thisValue, constraintsThis, newSegmentationMapThis);
 					boundEqsOther.set(idxOther, intersectionWithNextOther);
 					idxThis++;
 				} else if (intersectionWithNextOther.isEmpty()) {
 					// case 4.3
 					newValuesThis.add(null);
 					newValuesOther.add(newValue);
-					other.addEquality(newValue, otherValue, constraintsOther, newSegmentationMapOther);
+					other.addEquivalence(newValue, otherValue, constraintsOther, newSegmentationMapOther);
 					boundEqsThis.set(idxThis, intersectionWithNextThis);
 					idxOther++;
 				} else {
@@ -577,10 +609,10 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 				if (oldValueOther != null) {
 					removedValuesOther.add(oldValueOther);
 				}
-				// TODO: Handle this for multidim arrays precisely
+				// TODO: Handle this for multidim arrays precisely? (using unionSegmentations)
 				if (newValue.getSort().isArraySort()) {
-					final Pair<IProgramVar, Segmentation> segmentationPair = mToolkit
-							.createTopSegmentation(mToolkit.getType(TypeUtils.getValueSort(newValue.getSort())));
+					final Pair<IProgramVar, Segmentation> segmentationPair =
+							mToolkit.createTopSegmentation(newValue.getSort());
 					newSegmentationMapThis.add(newValue, segmentationPair.getSecond());
 					newSegmentationMapOther.add(newValue, segmentationPair.getSecond());
 				} else {
@@ -603,8 +635,8 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 			newBounds.add(boundEqsThis.get(idxThis));
 			newValuesThis.add(newValue);
 			newValuesOther.add(newValue);
-			addEquality(newValue, valuesThis.get(idxThis), constraintsThis, newSegmentationMapThis);
-			other.addEquality(newValue, valuesOther.get(otherSize - 1), constraintsOther, newSegmentationMapOther);
+			addEquivalence(newValue, valuesThis.get(idxThis), constraintsThis, newSegmentationMapThis);
+			other.addEquivalence(newValue, valuesOther.get(otherSize - 1), constraintsOther, newSegmentationMapOther);
 			idxThis++;
 
 		}
@@ -613,8 +645,8 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 			newBounds.add(boundEqsOther.get(idxOther));
 			newValuesThis.add(newValue);
 			newValuesOther.add(newValue);
-			addEquality(newValue, valuesThis.get(thisSize - 1), constraintsThis, newSegmentationMapThis);
-			other.addEquality(newValue, valuesOther.get(idxOther), constraintsOther, newSegmentationMapOther);
+			addEquivalence(newValue, valuesThis.get(thisSize - 1), constraintsThis, newSegmentationMapThis);
+			other.addEquivalence(newValue, valuesOther.get(idxOther), constraintsOther, newSegmentationMapOther);
 			idxOther++;
 		}
 		final List<IProgramVarOrConst> nonNullValuesThis =
@@ -639,10 +671,9 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 				continue;
 			}
 			if (valueThis != null && valueOther != null && valueThis.getSort().isArraySort()) {
-				final Segmentation thisAuxSegmentation = currentStateThis.mSegmentationMap.getSegmentation(valueThis);
-				final Segmentation otherAuxSegmentation =
-						currentStateOther.mSegmentationMap.getSegmentation(valueOther);
-				final UnificationResult<STATE> subResult =
+				final Segmentation thisAuxSegmentation = currentStateThis.getSegmentation(valueThis);
+				final Segmentation otherAuxSegmentation = currentStateOther.getSegmentation(valueOther);
+				final UnificationResult subResult =
 						currentStateThis.unify(currentStateOther, thisAuxSegmentation, otherAuxSegmentation);
 				currentStateThis = subResult.getFirstState();
 				currentStateOther = subResult.getSecondState();
@@ -650,13 +681,14 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 				auxVarSegmentations.putAll(subResult.getAuxVarSegmentations());
 			}
 		}
-		return new UnificationResult<>(currentStateThis, currentStateOther,
+		return new UnificationResult(currentStateThis, currentStateOther,
 				new EqClassSegmentation(newBounds, newValuesThis, newValuesOther), auxVarSegmentations);
 	}
 
-	private void addEquality(final IProgramVar newVar, final IProgramVar oldVar, final List<Term> constraints,
+	private void addEquivalence(final IProgramVar newVar, final IProgramVar oldVar, final List<Term> constraints,
 			final SegmentationMap segmentationMap) {
 		if (newVar.getSort().isArraySort()) {
+			// TODO: Only use an equivalent array here?
 			segmentationMap.move(newVar, oldVar);
 		} else {
 			constraints.add(mToolkit.connstructEquivalentConstraint(newVar, oldVar, getSubTerm()));
@@ -677,13 +709,12 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 		}
 		final SegmentationMap segmentationMap = new SegmentationMap();
 		final Set<IProgramVarOrConst> processedArrays = new HashSet<>();
-		final List<Term> constraints = new ArrayList<>();
-		final Set<IProgramVarOrConst> newVariables = new HashSet<>();
-		final Set<IProgramVarOrConst> removedVarsThis = new HashSet<>();
-		final Set<IProgramVarOrConst> removedVarsOther = new HashSet<>();
-		final Script script = mToolkit.getScript();
 		ArrayDomainState<STATE> thisState = this;
 		ArrayDomainState<STATE> otherState = other;
+		final List<Term> constraints = new ArrayList<>();
+		final Set<IProgramVarOrConst> newVariables = new HashSet<>();
+		final Set<IProgramVarOrConst> removeVariablesThis = new HashSet<>();
+		final Set<IProgramVarOrConst> removeVariablesOther = new HashSet<>();
 		for (final IProgramVarOrConst array : mVariables) {
 			if (!array.getSort().isArraySort() || processedArrays.contains(array)) {
 				continue;
@@ -692,126 +723,41 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 			final Set<IProgramVarOrConst> equivalenceClass = new HashSet<>(getEqualArrays(array));
 			equivalenceClass.retainAll(other.getEqualArrays(array));
 			processedArrays.addAll(equivalenceClass);
-			final UnificationResult<STATE> unificationResult = thisState.unify(otherState,
-					mSegmentationMap.getSegmentation(array), other.mSegmentationMap.getSegmentation(array));
+			final UnificationResult unificationResult =
+					thisState.unify(otherState, getSegmentation(array), other.getSegmentation(array));
 			thisState = unificationResult.getFirstState();
 			otherState = unificationResult.getSecondState();
-			final Map<IProgramVarOrConst, EqClassSegmentation> newSegmentations =
-					new HashMap<>(unificationResult.getAuxVarSegmentations());
-			newSegmentations.put(array, unificationResult.getSegmentation());
-			for (final Entry<IProgramVarOrConst, EqClassSegmentation> entry : newSegmentations.entrySet()) {
-				final IProgramVarOrConst arrayVar = entry.getKey();
-				final Sort sort = arrayVar.getSort();
-				final EqClassSegmentation eqSegmentation = entry.getValue();
-				final IBoogieType boundType = mToolkit.getType(TypeUtils.getIndexSort(sort));
-				final IBoogieType valueType = mToolkit.getType(TypeUtils.getValueSort(sort));
-				final List<IProgramVar> newBounds = new ArrayList<>();
-				newBounds.add(mToolkit.getMinBound());
-				final List<IProgramVar> newValues = new ArrayList<>();
-				for (final Set<Term> eqClass : eqSegmentation.getBounds()) {
-					final IProgramVar newBoundVar = mToolkit.createBoundVar(boundType);
-					newVariables.add(newBoundVar);
-					newBounds.add(newBoundVar);
-					if (!eqClass.isEmpty()) {
-						constraints.add(SmtUtils.binaryEquality(script, newBoundVar.getTermVariable(),
-								eqClass.iterator().next()));
-					}
-				}
-				final List<IProgramVar> valuesThis = eqSegmentation.getFirstValues();
-				final List<IProgramVar> valuesOther = eqSegmentation.getSecondValues();
-				for (int i = 0; i < valuesThis.size(); i++) {
-					final IProgramVar thisValue = valuesThis.get(i);
-					final IProgramVar otherValue = valuesOther.get(i);
-					if (thisValue != null && otherValue != null) {
-						if (!thisValue.equals(otherValue)) {
-							throw new InvalidParameterException(
-									"Unification should have returned the same value here.");
-						}
-						newValues.add(thisValue);
-					} else if (thisValue != null) {
-						final IProgramVar newValueVar = mToolkit.createValueVar(valueType);
-						final LinkedList<IProgramVar> newVarsToProject = new LinkedList<>();
-						final LinkedList<IProgramVar> oldVarsToProject = new LinkedList<>();
-						newVarsToProject.add(newValueVar);
-						oldVarsToProject.add(thisValue);
-						newValues.add(newValueVar);
-						while (!newVarsToProject.isEmpty()) {
-							final IProgramVar newVar = newVarsToProject.remove();
-							final IProgramVar oldVar = oldVarsToProject.remove();
-							if (newVar.getSort().isArraySort()) {
-								final Map<IProgramVarOrConst, IProgramVarOrConst> old2newVars = new HashMap<>();
-								final Segmentation s = thisState.mSegmentationMap.getSegmentation(oldVar);
-								for (final IProgramVar b : s.getBounds()) {
-									final IProgramVar newBound = mToolkit.createBoundVar(mToolkit.getType(b.getSort()));
-									oldVarsToProject.add(b);
-									newVarsToProject.add(newBound);
-									old2newVars.put(b, newBound);
-								}
-								for (final IProgramVar v : s.getValues()) {
-									final IProgramVar newValue = mToolkit.createValueVar(mToolkit.getType(v.getSort()));
-									oldVarsToProject.add(v);
-									newVarsToProject.add(newValue);
-									old2newVars.put(v, newValue);
-								}
-								segmentationMap.add(newVar, createFreshSegmentationCopy(s, old2newVars));
-							} else {
-								constraints.add(project(newVar, oldVar, getSubTerm()));
-								newVariables.add(newVar);
-								removedVarsThis.add(oldVar);
-							}
-						}
-					} else if (otherValue != null) {
-						final IProgramVar newValueVar = mToolkit.createValueVar(valueType);
-						final LinkedList<IProgramVar> newVarsToProject = new LinkedList<>();
-						final LinkedList<IProgramVar> oldVarsToProject = new LinkedList<>();
-						newVarsToProject.add(newValueVar);
-						oldVarsToProject.add(otherValue);
-						newValues.add(newValueVar);
-						while (!newVarsToProject.isEmpty()) {
-							final IProgramVar newVar = newVarsToProject.remove();
-							final IProgramVar oldVar = oldVarsToProject.remove();
-							if (newVar.getSort().isArraySort()) {
-								final Map<IProgramVarOrConst, IProgramVarOrConst> old2newVars = new HashMap<>();
-								final Segmentation s = otherState.mSegmentationMap.getSegmentation(oldVar);
-								for (final IProgramVar b : s.getBounds()) {
-									final IProgramVar newBound = mToolkit.createBoundVar(mToolkit.getType(b.getSort()));
-									oldVarsToProject.add(b);
-									newVarsToProject.add(newBound);
-									old2newVars.put(b, newBound);
-								}
-								for (final IProgramVar v : s.getValues()) {
-									final IProgramVar newValue = mToolkit.createValueVar(mToolkit.getType(v.getSort()));
-									oldVarsToProject.add(v);
-									newVarsToProject.add(newValue);
-									old2newVars.put(v, newValue);
-								}
-								segmentationMap.add(newVar, createFreshSegmentationCopy(s, old2newVars));
-							} else {
-								constraints.add(project(newVar, oldVar, otherState.getSubTerm()));
-								newVariables.add(newVar);
-								removedVarsOther.add(oldVar);
-							}
-						}
-					} else {
-						// TODO: Return a bottom state here?
-						final IProgramVar newValueVar = mToolkit.createValueVar(valueType);
-						newVariables.add(newValueVar);
-						newValues.add(newValueVar);
-					}
-				}
-				newBounds.add(mToolkit.getMaxBound());
-				segmentationMap.addEquivalenceClass(
-						arrayVar.equals(array) ? equivalenceClass : Collections.singleton(arrayVar),
-						new Segmentation(newBounds, newValues));
+			final EqSegmentationConversionResult result = thisState.convertEqClassSegmentation(otherState,
+					unificationResult.getSegmentation(), array.getSort());
+			constraints.addAll(result.getConstraints());
+			newVariables.addAll(result.getNewVariables());
+			removeVariablesThis.addAll(result.getRemoveVariablesFirstState());
+			removeVariablesOther.addAll(result.getRemoveVariablesSecondState());
+			segmentationMap.addEquivalenceClass(equivalenceClass, result.getSegmentation());
+			final Map<IProgramVar, Segmentation> newSegmentations = result.getNewSegmentations();
+			for (final Entry<IProgramVar, EqClassSegmentation> entry : unificationResult.getAuxVarSegmentations()
+					.entrySet()) {
+				final IProgramVar var = entry.getKey();
+				final EqSegmentationConversionResult result2 =
+						thisState.convertEqClassSegmentation(otherState, entry.getValue(), var.getSort());
+				newSegmentations.put(var, result2.getSegmentation());
+				newSegmentations.putAll(result2.getNewSegmentations());
+				constraints.addAll(result2.getConstraints());
+				newVariables.addAll(result2.getNewVariables());
+				removeVariablesThis.addAll(result2.getRemoveVariablesFirstState());
+				removeVariablesOther.addAll(result2.getRemoveVariablesSecondState());
+			}
+			for (final Entry<IProgramVar, Segmentation> entry : newSegmentations.entrySet()) {
+				segmentationMap.add(entry.getKey(), entry.getValue());
 			}
 		}
-		removedVarsThis.addAll(mSegmentationMap.getAuxVars());
-		removedVarsOther.addAll(other.mSegmentationMap.getAuxVars());
-		final STATE substateThis = thisState.getSubState().removeVariables(removedVarsThis);
-		final STATE substateOther = otherState.getSubState().removeVariables(removedVarsOther);
+		removeVariablesThis.addAll(mSegmentationMap.getAuxVars());
+		removeVariablesOther.addAll(otherState.mSegmentationMap.getAuxVars());
+		final STATE substateThis = thisState.getSubState().removeVariables(removeVariablesThis);
+		final STATE substateOther = otherState.getSubState().removeVariables(removeVariablesOther);
 		final STATE commonSubstate = operator.apply(substateThis, substateOther);
 		final STATE resultingSubstate = mToolkit.handleAssumptionBySubdomain(commonSubstate.addVariables(newVariables),
-				SmtUtils.and(script, constraints));
+				SmtUtils.and(mToolkit.getScript(), constraints));
 		return updateState(resultingSubstate, segmentationMap).simplify();
 	}
 
@@ -922,8 +868,8 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 			if (!var.getSort().isArraySort()) {
 				continue;
 			}
-			final UnificationResult<STATE> unificationResult = thisState.unify(otherState,
-					mSegmentationMap.getSegmentation(var), other.mSegmentationMap.getSegmentation(var));
+			final UnificationResult unificationResult =
+					thisState.unify(otherState, getSegmentation(var), other.getSegmentation(var));
 			final Map<IProgramVar, EqClassSegmentation> auxVarSegmentaions = unificationResult.getAuxVarSegmentations();
 			final List<IProgramVar> thisValues;
 			final List<IProgramVar> otherValues;
@@ -989,22 +935,22 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 	public ArrayDomainState<STATE> compact() {
 		final SegmentationMap newSegmentationMap = getSegmentationMap();
 		final STATE newSubState = mSubState.compact();
-		for (final IProgramVarOrConst a : mSegmentationMap.getArrays()) {
-			if (isArrayTop(a)) {
+		for (final IProgramVarOrConst a : mVariables) {
+			if (a.getSort().isArraySort() && isArrayTop(a)) {
 				newSegmentationMap.remove(a);
 			}
 		}
 		final Set<IProgramVarOrConst> newVariables = new HashSet<>(newSubState.getVariables());
 		newVariables.addAll(newSegmentationMap.getArrays());
 		newVariables.retainAll(mVariables);
-		return new ArrayDomainState<>(newSubState, newSegmentationMap, newVariables, mToolkit);
+		return new ArrayDomainState<>(newSubState, newSegmentationMap, newVariables, mToolkit).removeUnusedAuxVars();
 	}
 
 	private boolean isArrayTop(final IProgramVarOrConst array) {
 		if (mSegmentationMap.getEquivalenceClass(array).size() > 1) {
 			return false;
 		}
-		final Segmentation segmentation = mSegmentationMap.getSegmentation(array);
+		final Segmentation segmentation = getSegmentation(array);
 		if (segmentation.size() > 1) {
 			return false;
 		}
@@ -1022,6 +968,10 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 	public Term getTerm(final Script script) {
 		if (isBottom()) {
 			return script.term("false");
+		}
+		// If there are no arrays, just return the term of the substate
+		if (mSegmentationMap.getAllRepresentatives().isEmpty()) {
+			return getSubTerm();
 		}
 		final Set<TermVariable> values = getTermVars(mSegmentationMap.getValueVars());
 		final Term filteredTerm = SmtUtils.filterFormula(getSubTerm(), values, script);
@@ -1052,13 +1002,17 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 		return toString();
 	}
 
-	public Pair<ArrayDomainState<STATE>, Segmentation> getSegmentation(final Expression array) {
-		if (array instanceof IdentifierExpression) {
-			final IProgramVarOrConst arrayVar = mToolkit.getBoogieVar((IdentifierExpression) array);
-			return new Pair<>(this, mSegmentationMap.getSegmentation(arrayVar));
+	public Segmentation getSegmentation(final IProgramVarOrConst var) {
+		return mSegmentationMap.getSegmentation(var);
+	}
+
+	public Pair<ArrayDomainState<STATE>, Segmentation> getSegmentation(final Expression expr) {
+		if (expr instanceof IdentifierExpression) {
+			final IProgramVarOrConst var = mToolkit.getBoogieVar((IdentifierExpression) expr);
+			return new Pair<>(this, getSegmentation(var));
 		}
-		if (array instanceof ArrayStoreExpression) {
-			final ArrayStoreExpression store = (ArrayStoreExpression) array;
+		if (expr instanceof ArrayStoreExpression) {
+			final ArrayStoreExpression store = (ArrayStoreExpression) expr;
 			final Expression[] indices = store.getIndices();
 			if (indices.length > 1) {
 				throw new UnsupportedOperationException("Multidimensional stores are not supported here");
@@ -1136,10 +1090,9 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 			return new Pair<>(tmpState.updateState(newSubState), new Segmentation(newBounds, newValues));
 		}
 		// Otherwise return a top segmentation
-		// TODO: Implement this for multidimensional arrays?
-		final Pair<IProgramVar, Segmentation> segmentationPair = mToolkit.createTopSegmentation(array.getType());
-		return new Pair<>(updateState(mSubState.addVariable(segmentationPair.getFirst())),
-				segmentationPair.getSecond());
+		final Sort arraySort = mToolkit.getTerm(expr).getSort();
+		final Pair<IProgramVar, Segmentation> segmentationPair = mToolkit.createTopSegmentation(arraySort);
+		return new Pair<>(addAuxVar(segmentationPair.getFirst()), segmentationPair.getSecond());
 	}
 
 	private Set<IProgramVarOrConst> getEqualArrays(final IProgramVarOrConst array) {
@@ -1211,42 +1164,76 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 		return new Pair<>(min, max);
 	}
 
-	public ArrayDomainState<STATE> removeUnusedAuxVars() {
-		final Set<IProgramVarOrConst> vars = new HashSet<>(mSubState.getVariables());
-		vars.removeAll(mVariables);
-		vars.removeAll(mSegmentationMap.getAuxVars());
-		return updateState(mSubState.removeVariables(vars));
+	private ArrayDomainState<STATE> removeUnusedAuxVars() {
+		final LinkedList<IProgramVarOrConst> varsToDo = new LinkedList<>(mVariables);
+		final Set<IProgramVarOrConst> processedVars = new HashSet<>();
+		final Set<IProgramVarOrConst> newVars = new HashSet<>();
+		while (!varsToDo.isEmpty()) {
+			final IProgramVarOrConst current = varsToDo.removeLast();
+			newVars.add(current);
+			if (processedVars.contains(current)) {
+				continue;
+			}
+			if (current.getSort().isArraySort()) {
+				if (!mSegmentationMap.getArrays().contains(current)) {
+					return null;
+				}
+				processedVars.addAll(mSegmentationMap.getEquivalenceClass(current));
+				final Segmentation segmentation = getSegmentation(current);
+				varsToDo.addAll(segmentation.getBounds());
+				varsToDo.addAll(segmentation.getValues());
+			} else {
+				processedVars.add(current);
+			}
+		}
+		final Set<IProgramVarOrConst> removeVars = DataStructureUtils.difference(mSubState.getVariables(), newVars);
+		final Set<IProgramVarOrConst> removeFromSegmentationMap =
+				DataStructureUtils.difference(mSegmentationMap.getArrays(), newVars);
+		if (removeVars.isEmpty() && removeFromSegmentationMap.isEmpty()) {
+			return this;
+		}
+		final SegmentationMap newSegmentationMap = getSegmentationMap();
+		newSegmentationMap.removeAll(removeFromSegmentationMap);
+		return updateState(mSubState.removeVariables(removeVars), newSegmentationMap);
 	}
 
 	private Segmentation simplifySegmentation(final Segmentation segmentation) {
-		final Script script = mToolkit.getScript();
-		final List<IProgramVar> newBounds = new ArrayList<>();
-		final List<IProgramVar> newValues = new ArrayList<>();
-		newBounds.add(segmentation.getBound(0));
-		newValues.add(segmentation.getValue(0));
-		for (int i = 1; i < segmentation.size(); i++) {
-			final TermVariable currentBound = segmentation.getBound(i).getTermVariable();
-			final TermVariable nextBound = segmentation.getBound(i + 1).getTermVariable();
-			final Term boundEquality = SmtUtils.binaryEquality(script, currentBound, nextBound);
-			if (mSubState.evaluate(script, boundEquality) == EvalResult.TRUE) {
-				continue;
+		Segmentation result = mSimplifiedSegmentations.get(segmentation);
+		if (result == null) {
+			final Script script = mToolkit.getScript();
+			final List<IProgramVar> newBounds = new ArrayList<>();
+			final List<IProgramVar> newValues = new ArrayList<>();
+			newBounds.add(segmentation.getBound(0));
+			newValues.add(segmentation.getValue(0));
+			for (int i = 1; i < segmentation.size(); i++) {
+				final TermVariable currentBound = segmentation.getBound(i).getTermVariable();
+				final TermVariable nextBound = segmentation.getBound(i + 1).getTermVariable();
+				final Term boundEquality = SmtUtils.binaryEquality(script, currentBound, nextBound);
+				if (mSubState.evaluate(script, boundEquality) == EvalResult.TRUE) {
+					continue;
+				}
+				final IProgramVar currentValue = segmentation.getValue(i);
+				final IProgramVar lastValue = newValues.get(newValues.size() - 1);
+				if (areVariablesEquivalent(currentValue, lastValue)) {
+					continue;
+				}
+				newValues.add(segmentation.getValue(i));
+				newBounds.add(segmentation.getBound(i));
 			}
-			final IProgramVar currentValue = segmentation.getValue(i);
-			final IProgramVar lastValue = newValues.get(newValues.size() - 1);
-			if (areVariablesEquivalent(currentValue, lastValue)) {
-				continue;
-			}
-			newValues.add(segmentation.getValue(i));
-			newBounds.add(segmentation.getBound(i));
+			newBounds.add(mToolkit.getMaxBound());
+			result = new Segmentation(newBounds, newValues);
+			mSimplifiedSegmentations.put(segmentation, result);
 		}
-		newBounds.add(mToolkit.getMaxBound());
-		return new Segmentation(newBounds, newValues);
+		return result;
 	}
 
 	private boolean areVariablesEquivalent(final IProgramVar v1, final IProgramVar v2) {
+		if (v1.equals(v2)) {
+			return true;
+		}
 		if (v1.getSort().isArraySort()) {
-			final Segmentation s1 = simplifySegmentation(mSegmentationMap.getSegmentation(v1));
-			final Segmentation s2 = simplifySegmentation(mSegmentationMap.getSegmentation(v2));
+			final Segmentation s1 = simplifySegmentation(getSegmentation(v1));
+			final Segmentation s2 = simplifySegmentation(getSegmentation(v2));
 			// Check if the bounds and values are equivalent
 			if (s1.size() != s2.size()) {
 				return false;
@@ -1266,26 +1253,28 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 			}
 			return areVariablesEquivalent(values1.get(max), values2.get(max));
 		}
-		final Script script = mToolkit.getScript();
-		final TermVariable v1Tv = v1.getTermVariable();
-		final TermVariable v2Tv = v2.getTermVariable();
-		final Term v1Term = SmtUtils.filterFormula(getSubTerm(), Collections.singleton(v1Tv), script);
-		final Term v2Term = SmtUtils.filterFormula(getSubTerm(), Collections.singleton(v2Tv), script);
-		final Substitution substitution =
-				new Substitution(mToolkit.getManagedScript(), Collections.singletonMap(v1Tv, v2Tv));
-		final Term v1Substituted = substitution.transform(v1Term);
-		final Term v2Substituted = substitution.transform(v2Term);
-		return SmtUtils.areFormulasEquivalent(v1Substituted, v2Substituted, script);
+		final IBoogieType type = mToolkit.getType(v1.getSort());
+		final IProgramVar aux1 = mToolkit.createAuxVar(type);
+		final IProgramVar aux2 = mToolkit.createAuxVar(type);
+		final Map<IProgramVarOrConst, IProgramVarOrConst> old2newVars1 = new HashMap<>();
+		old2newVars1.put(v1, aux1);
+		old2newVars1.put(v2, aux2);
+		final STATE renamedState1 = mSubState.renameVariables(old2newVars1);
+		final Map<IProgramVarOrConst, IProgramVarOrConst> old2newVars2 = new HashMap<>();
+		old2newVars2.put(v1, aux2);
+		old2newVars2.put(v2, aux1);
+		final STATE renamedState2 = mSubState.renameVariables(old2newVars2);
+		return renamedState1.isEqualTo(renamedState2);
 	}
 
 	public ArrayDomainState<STATE> simplify() {
 		final SegmentationMap newSegmentationMap = new SegmentationMap();
 		for (final IProgramVarOrConst rep : mSegmentationMap.getAllRepresentatives()) {
-			final Segmentation newSegmentation = simplifySegmentation(mSegmentationMap.getSegmentation(rep));
+			final Segmentation newSegmentation = simplifySegmentation(getSegmentation(rep));
 			final Set<IProgramVarOrConst> eqClass = mSegmentationMap.getEquivalenceClass(rep);
 			newSegmentationMap.addEquivalenceClass(eqClass, newSegmentation);
 		}
-		return updateState(mSubState, newSegmentationMap).removeUnusedAuxVars();
+		return updateState(newSegmentationMap).removeUnusedAuxVars();
 	}
 
 	public Term getSubTerm() {
@@ -1305,19 +1294,184 @@ public class ArrayDomainState<STATE extends IAbstractState<STATE>> implements IA
 
 	@Override
 	public Set<ArrayDomainState<STATE>> union(final Set<ArrayDomainState<STATE>> states, final int maxSize) {
-		final LinkedList<ArrayDomainState<STATE>> newStates = new LinkedList<>(states);
+		final LinkedList<ArrayDomainState<STATE>> stateList = new LinkedList<>(states);
+		final Set<ArrayDomainState<STATE>> result = new HashSet<>(states);
 		int numberOfMerges = states.size() - maxSize;
 		while (numberOfMerges > 0) {
 			// Merge the states in reversed order
-			final ArrayDomainState<STATE> state1 = newStates.removeLast();
-			final ArrayDomainState<STATE> state2 = newStates.removeLast();
-			if (newStates.add(state1.union(state2))) {
+			final ArrayDomainState<STATE> state1 = stateList.removeLast();
+			final ArrayDomainState<STATE> state2 = stateList.removeLast();
+			result.remove(state1);
+			result.remove(state2);
+			final ArrayDomainState<STATE> newState = state1.union(state2);
+			if (result.add(newState)) {
+				stateList.add(newState);
 				--numberOfMerges;
 			} else {
 				numberOfMerges -= 2;
 			}
 		}
-		assert states.size() <= maxSize;
-		return new LinkedHashSet<>(newStates);
+		assert result.size() <= maxSize : "Did not reduce enough states";
+		return result;
+	}
+
+	private boolean checkSegmentationMap() {
+		if (isBottom()) {
+			return true;
+		}
+		for (final IProgramVarOrConst var : mVariables) {
+			final Sort sort = var.getSort();
+			if (!sort.isArraySort()) {
+				continue;
+			}
+			final Sort valueSort = TypeUtils.getValueSort(sort);
+			final Segmentation segmentation = getSegmentation(var);
+			assert segmentation != null : var + " not in segmentation map of state" + this;
+			for (final IProgramVar v : segmentation.getValues()) {
+				final Sort sort2 = v.getSort();
+				assert valueSort.equals(sort2) : "The value " + v
+						+ " has not the sort corresponding to its array variable " + var;
+				if (sort2.isArraySort()) {
+					assert getSegmentation(v) != null : v + " not in segmentation map of state" + this;
+				} else {
+					assert mSubState.containsVariable(v) : v + " not in substate of state" + this;
+				}
+			}
+		}
+		return true;
+	}
+
+	private class UnificationResult {
+		private final ArrayDomainState<STATE> mFirstState;
+		private final ArrayDomainState<STATE> mSecondState;
+		private final EqClassSegmentation mSegmentation;
+		private final Map<IProgramVar, EqClassSegmentation> mAuxVarSegmentations;
+
+		public UnificationResult(final ArrayDomainState<STATE> firstState, final ArrayDomainState<STATE> secondState,
+				final EqClassSegmentation segmentation,
+				final Map<IProgramVar, EqClassSegmentation> auxVarSegmentations) {
+			mFirstState = firstState;
+			mSecondState = secondState;
+			mSegmentation = segmentation;
+			mAuxVarSegmentations = auxVarSegmentations;
+		}
+
+		public Map<IProgramVar, EqClassSegmentation> getAuxVarSegmentations() {
+			return mAuxVarSegmentations;
+		}
+
+		public ArrayDomainState<STATE> getFirstState() {
+			return mFirstState;
+		}
+
+		public ArrayDomainState<STATE> getSecondState() {
+			return mSecondState;
+		}
+
+		public EqClassSegmentation getSegmentation() {
+			return mSegmentation;
+		}
+
+		public List<IProgramVar> getFirstValues() {
+			return mSegmentation.getFirstValues();
+		}
+
+		public List<IProgramVar> getSecondValues() {
+			return mSegmentation.getSecondValues();
+		}
+
+		@Override
+		public String toString() {
+			final StringBuilder stringBuilder = new StringBuilder();
+			stringBuilder.append("States:\n");
+			stringBuilder.append(mFirstState).append('\n');
+			stringBuilder.append(mSecondState).append("\n\n");
+			stringBuilder.append("Segmentation: ").append(mSegmentation).append('\n');
+			stringBuilder.append("AuxVarSegmentations: ").append(mAuxVarSegmentations).append('\n');
+			return stringBuilder.toString();
+		}
+	}
+
+	private class EqClassSegmentation {
+		private final List<Set<Term>> mBounds;
+		private final List<IProgramVar> mFirstValues;
+		private final List<IProgramVar> mSecondValues;
+
+		public EqClassSegmentation(final List<Set<Term>> bounds, final List<IProgramVar> firstValues,
+				final List<IProgramVar> secondValues) {
+			mBounds = bounds;
+			mFirstValues = firstValues;
+			mSecondValues = secondValues;
+		}
+
+		public List<Set<Term>> getBounds() {
+			return mBounds;
+		}
+
+		public List<IProgramVar> getFirstValues() {
+			return mFirstValues;
+		}
+
+		public List<IProgramVar> getSecondValues() {
+			return mSecondValues;
+		}
+
+		@Override
+		public String toString() {
+			final StringBuilder stringBuilder = new StringBuilder();
+			stringBuilder.append("{-inf} ").append(mFirstValues.get(0)).append(" / ").append(mSecondValues.get(0));
+			for (int i = 0; i < mFirstValues.size() - 1; i++) {
+				stringBuilder.append(' ').append(mBounds.get(i).toString().replace('[', '{').replace(']', '}'));
+				stringBuilder.append(' ').append(mFirstValues.get(i + 1)).append(" / ")
+						.append(mSecondValues.get(i + 1));
+			}
+			return stringBuilder.append(" {inf}").toString();
+		}
+	}
+
+	private class EqSegmentationConversionResult {
+		private final Segmentation mSegmentation;
+		private final Map<IProgramVar, Segmentation> mNewSegmentations;
+		private final Collection<Term> mConstraints;
+		private final Collection<IProgramVarOrConst> mNewVariables;
+		private final Collection<IProgramVarOrConst> mRemoveVariablesFirstState;
+		private final Collection<IProgramVarOrConst> mRemoveVariablesSecondState;
+
+		public EqSegmentationConversionResult(final Segmentation segmentation,
+				final Map<IProgramVar, Segmentation> newSegmentations, final Collection<Term> constraints,
+				final Collection<IProgramVarOrConst> newVariables,
+				final Collection<IProgramVarOrConst> removeVariablesFirstState,
+				final Collection<IProgramVarOrConst> removeVariablesSecondState) {
+			mSegmentation = segmentation;
+			mNewSegmentations = newSegmentations;
+			mConstraints = constraints;
+			mNewVariables = newVariables;
+			mRemoveVariablesFirstState = removeVariablesFirstState;
+			mRemoveVariablesSecondState = removeVariablesSecondState;
+		}
+
+		public Segmentation getSegmentation() {
+			return mSegmentation;
+		}
+
+		public Map<IProgramVar, Segmentation> getNewSegmentations() {
+			return mNewSegmentations;
+		}
+
+		public Collection<Term> getConstraints() {
+			return mConstraints;
+		}
+
+		public Collection<IProgramVarOrConst> getNewVariables() {
+			return mNewVariables;
+		}
+
+		public Collection<IProgramVarOrConst> getRemoveVariablesFirstState() {
+			return mRemoveVariablesFirstState;
+		}
+
+		public Collection<IProgramVarOrConst> getRemoveVariablesSecondState() {
+			return mRemoveVariablesSecondState;
+		}
 	}
 }

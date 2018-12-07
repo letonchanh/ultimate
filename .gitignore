@@ -113,6 +113,7 @@ hs_err_pid*
 
 /trunk/source/Library-BoogieAST/src/de/uni_freiburg/informatik/ultimate/boogie/ast/GeneratedBoogieAstTransformer.java
 /trunk/source/Library-BoogieAST/src/de/uni_freiburg/informatik/ultimate/boogie/ast/GeneratedBoogieAstVisitor.java
+/trunk/source/Library-BoogieAST/src/de/uni_freiburg/informatik/ultimate/boogie/ast/AtomicStatement.java
 /trunk/source/Library-BoogieAST/src/de/uni_freiburg/informatik/ultimate/boogie/ast/ArrayAccessExpression.java
 /trunk/source/Library-BoogieAST/src/de/uni_freiburg/informatik/ultimate/boogie/ast/ArrayLHS.java
 /trunk/source/Library-BoogieAST/src/de/uni_freiburg/informatik/ultimate/boogie/ast/ArrayStoreExpression.java
@@ -121,6 +122,7 @@ hs_err_pid*
 /trunk/source/Library-BoogieAST/src/de/uni_freiburg/informatik/ultimate/boogie/ast/AssignmentStatement.java
 /trunk/source/Library-BoogieAST/src/de/uni_freiburg/informatik/ultimate/boogie/ast/AssumeStatement.java
 /trunk/source/Library-BoogieAST/src/de/uni_freiburg/informatik/ultimate/boogie/ast/ASTType.java
+/trunk/source/Library-BoogieAST/src/de/uni_freiburg/informatik/ultimate/boogie/ast/AtomicStatement.java
 /trunk/source/Library-BoogieAST/src/de/uni_freiburg/informatik/ultimate/boogie/ast/Attribute.java
 /trunk/source/Library-BoogieAST/src/de/uni_freiburg/informatik/ultimate/boogie/ast/Axiom.java
 /trunk/source/Library-BoogieAST/src/de/uni_freiburg/informatik/ultimate/boogie/ast/BinaryExpression.java

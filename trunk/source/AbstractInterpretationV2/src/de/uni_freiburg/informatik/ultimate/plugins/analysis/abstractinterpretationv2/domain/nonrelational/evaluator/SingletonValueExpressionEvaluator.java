@@ -28,12 +28,13 @@
 
 package de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.evaluator;
 
+import java.util.Collection;
 import java.util.Collections;
-import java.util.List;
 
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.absint.IAbstractState;
 import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.BooleanValue;
 import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.INonrelationalValue;
+import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.INonrelationalValueFactory;
 import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.NonrelationalEvaluationResult;
 import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.evaluator.EvaluatorUtils.EvaluatorType;
 
@@ -48,7 +49,7 @@ import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretati
  *            The type of states in the abstract domain.
  */
 public class SingletonValueExpressionEvaluator<VALUE extends INonrelationalValue<VALUE>, STATE extends IAbstractState<STATE>>
-		implements IEvaluator<VALUE, STATE> {
+		extends Evaluator<VALUE, STATE> {
 
 	private final VALUE mValue;
 	private final EvaluatorType mType;
@@ -59,29 +60,27 @@ public class SingletonValueExpressionEvaluator<VALUE extends INonrelationalValue
 	 * @param value
 	 *            The value of the evaluated expression.
 	 * @param type
+	 * @param nonrelationalValueFactory
+	 * @param logger
 	 */
-	public SingletonValueExpressionEvaluator(final VALUE value, final EvaluatorType type) {
+	public SingletonValueExpressionEvaluator(final VALUE value, final EvaluatorType type, final int maxRecursionDepth,
+			final INonrelationalValueFactory<VALUE> nonrelationalValueFactory, final EvaluatorLogger logger) {
+		super(maxRecursionDepth, nonrelationalValueFactory, logger);
 		mValue = value;
 		mType = type;
 	}
 
 	@Override
-	public List<IEvaluationResult<VALUE>> evaluate(final STATE currentState) {
+	public Collection<IEvaluationResult<VALUE>> evaluate(final STATE currentState) {
 		assert currentState != null;
 		return Collections.singletonList(new NonrelationalEvaluationResult<>(mValue, BooleanValue.TOP));
 	}
 
 	@Override
-	public List<STATE> inverseEvaluate(final IEvaluationResult<VALUE> computedValue, final STATE currentState) {
+	public Collection<STATE> inverseEvaluate(final IEvaluationResult<VALUE> computedValue, final STATE currentState) {
 		assert computedValue != null;
 		assert currentState != null;
 		return Collections.singletonList(currentState);
-	}
-
-	@Override
-	public void addSubEvaluator(final IEvaluator<VALUE, STATE> evaluator) {
-		throw new UnsupportedOperationException(
-				"Cannot add a sub evaluator to a singleton value expression evaluator.");
 	}
 
 	@Override

@@ -51,6 +51,7 @@ import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.T
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.chandler.MemoryHandler;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.chandler.StructHandler;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.chandler.TypeSizeAndOffsetComputer;
+import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.chandler.TypeSizeAndOffsetComputer.Offset;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.chandler.TypeSizes;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.expressiontranslation.ExpressionTranslation;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.container.AuxVarInfo;
@@ -296,10 +297,14 @@ public class ExpressionResultTransformer {
 				newAuxVars.addAll(fieldRead.getAuxVars());
 			} else if (underlyingType instanceof CStructOrUnion) {
 
-				final Expression innerStructOffset =
+				final Offset innerStructOffset =
 						mTypeSizeAndOffsetComputer.constructOffsetForField(loc, structType, i, hook);
+				if (innerStructOffset.isBitfieldOffset()) {
+					throw new UnsupportedOperationException("Bitfield read struct from heap");
+				}
+
 				final Expression offsetSum = mExprTrans.constructArithmeticExpression(loc, IASTBinaryExpression.op_plus,
-						currentStructOffset, mExprTrans.getCTypeOfPointerComponents(), innerStructOffset,
+						currentStructOffset, mExprTrans.getCTypeOfPointerComponents(), innerStructOffset.getAddressOffsetAsExpression(loc),
 						mExprTrans.getCTypeOfPointerComponents());
 				final Expression innerStructAddress =
 						MemoryHandler.constructPointerFromBaseAndOffset(currentStructBaseAddress, offsetSum, loc);
@@ -726,10 +731,10 @@ public class ExpressionResultTransformer {
 		if (oldType instanceof CPrimitive) {
 			final CPrimitive cPrimitive = (CPrimitive) oldType;
 			if (cPrimitive.isIntegerType()) {
-				return mExprTrans.convertIntToFloat(loc, rexp, newType);
+				return mExprTrans.convertIfNecessary(loc, rexp, newType);
 			}
 			if (cPrimitive.isRealFloatingType()) {
-				return mExprTrans.convertFloatToFloat(loc, rexp, newType);
+				return mExprTrans.convertIfNecessary(loc, rexp, newType);
 			}
 			if (cPrimitive.getType().equals(CPrimitives.VOID)) {
 				throw new IncorrectSyntaxException(loc, "cannot convert from void");
@@ -740,7 +745,7 @@ public class ExpressionResultTransformer {
 			throw new IncorrectSyntaxException(loc, "cannot convert pointer to float");
 		}
 		if (oldType instanceof CEnum) {
-			return mExprTrans.convertIntToFloat(loc, rexp, newType);
+			return mExprTrans.convertIfNecessary(loc, rexp, newType);
 		}
 		if (oldType instanceof CArray) {
 			throw new AssertionError("cannot convert from CArray");

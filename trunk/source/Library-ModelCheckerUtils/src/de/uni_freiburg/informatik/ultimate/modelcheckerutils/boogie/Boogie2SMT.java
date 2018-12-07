@@ -38,15 +38,15 @@ import de.uni_freiburg.informatik.ultimate.boogie.ast.Axiom;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.BoogieASTNode;
 import de.uni_freiburg.informatik.ultimate.core.lib.results.UnsupportedSyntaxResult;
 import de.uni_freiburg.informatik.ultimate.core.model.services.IUltimateServiceProvider;
+import de.uni_freiburg.informatik.ultimate.logic.QuotedObject;
 import de.uni_freiburg.informatik.ultimate.logic.Script;
 import de.uni_freiburg.informatik.ultimate.logic.Term;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.ModelCheckerUtils;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.boogie.Expression2Term.IIdentifierTranslator;
+import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.SmtSymbols;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.variables.IProgramVar;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.SmtUtils;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.managedscript.ManagedScript;
-import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.predicates.BasicPredicate;
-import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.predicates.IPredicate;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.predicates.TermVarsProc;
 
 /**
@@ -56,8 +56,6 @@ import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.predicates.Term
  *
  */
 public class Boogie2SMT {
-
-	public static final int HARDCODED_SERIALNUMBER_FOR_AXIOMS = 0;
 
 	private final BoogieDeclarations mBoogieDeclarations;
 	private final ManagedScript mScript;
@@ -70,12 +68,9 @@ public class Boogie2SMT {
 
 	private final Statements2TransFormula mStatements2TransFormula;
 
-	// private final ConstOnlyIdentifierTranslator mConstOnlyIdentifierTranslator;
-
-	private final IPredicate mAxioms;
+	private final SmtSymbols mSmtSymbols;
 
 	private final IUltimateServiceProvider mServices;
-
 
 	public Boogie2SMT(final ManagedScript maScript, final BoogieDeclarations boogieDeclarations,
 			final boolean bitvectorInsteadOfInt, final IUltimateServiceProvider services,
@@ -87,7 +82,8 @@ public class Boogie2SMT {
 		if (bitvectorInsteadOfInt) {
 			mTypeSortTranslator = new TypeSortTranslatorBitvectorWorkaround(boogieDeclarations.getTypeDeclarations(),
 					mScript.getScript(), mServices);
-			mBoogie2SmtSymbolTable = new Boogie2SmtSymbolTable(boogieDeclarations, mScript, mTypeSortTranslator, Collections.emptySet());
+			mBoogie2SmtSymbolTable =
+					new Boogie2SmtSymbolTable(boogieDeclarations, mScript, mTypeSortTranslator, Collections.emptySet());
 			// TODO: add concurIdVars to mBoogie2SmtSymbolTable
 			mOperationTranslator =
 					new BitvectorWorkaroundOperationTranslator(mBoogie2SmtSymbolTable, mScript.getScript());
@@ -96,7 +92,8 @@ public class Boogie2SMT {
 		} else {
 			mTypeSortTranslator =
 					new TypeSortTranslator(boogieDeclarations.getTypeDeclarations(), mScript.getScript(), mServices);
-			mBoogie2SmtSymbolTable = new Boogie2SmtSymbolTable(boogieDeclarations, mScript, mTypeSortTranslator, Collections.emptySet());
+			mBoogie2SmtSymbolTable =
+					new Boogie2SmtSymbolTable(boogieDeclarations, mScript, mTypeSortTranslator, Collections.emptySet());
 
 			mOperationTranslator = new DefaultOperationTranslator(mBoogie2SmtSymbolTable, mScript.getScript());
 			mExpression2Term = new Expression2Term(mServices, mScript.getScript(), mTypeSortTranslator,
@@ -104,17 +101,20 @@ public class Boogie2SMT {
 		}
 
 		final ArrayList<Term> axiomList = new ArrayList<>(boogieDeclarations.getAxioms().size());
+		mScript.getScript().echo(new QuotedObject("Start declaration of axioms"));
 		for (final Axiom decl : boogieDeclarations.getAxioms()) {
 			final Term term = declareAxiom(decl, mExpression2Term);
 			axiomList.add(term);
 		}
+		mScript.getScript().echo(new QuotedObject("Finished declaration of axioms"));
 		final TermVarsProc tvp = TermVarsProc.computeTermVarsProc(SmtUtils.and(mScript.getScript(), axiomList),
 				maScript.getScript(), mBoogie2SmtSymbolTable);
 		assert tvp.getVars().isEmpty() : "axioms must not have variables";
-		mAxioms = new BasicPredicate(HARDCODED_SERIALNUMBER_FOR_AXIOMS, tvp.getProcedures(), tvp.getFormula(),
-				tvp.getVars(), tvp.getClosedFormula());
-		mStatements2TransFormula = new Statements2TransFormula(this, mServices, mExpression2Term,
-				simplePartialSkolemization);
+		mSmtSymbols = new SmtSymbols(tvp.getClosedFormula(), tvp.getProcedures(),
+				mBoogie2SmtSymbolTable.getSmtFunction2SmtFunctionDefinition());
+
+		mStatements2TransFormula =
+				new Statements2TransFormula(this, mServices, mExpression2Term, simplePartialSkolemization);
 		mTerm2Expression = new Term2Expression(mTypeSortTranslator, mBoogie2SmtSymbolTable, maScript);
 
 	}
@@ -136,7 +136,6 @@ public class Boogie2SMT {
 	}
 
 	static String quoteId(final String id) {
-		// return Term.quoteId(id);
 		return id;
 	}
 
@@ -156,12 +155,8 @@ public class Boogie2SMT {
 		return mTypeSortTranslator;
 	}
 
-	// ConstOnlyIdentifierTranslator getConstOnlyIdentifierTranslator() {
-	// return mConstOnlyIdentifierTranslator;
-	// }
-
-	public IPredicate getAxioms() {
-		return mAxioms;
+	public SmtSymbols getSmtSymbols() {
+		return mSmtSymbols;
 	}
 
 	private Term declareAxiom(final Axiom ax, final Expression2Term expression2term) {
@@ -179,8 +174,6 @@ public class Boogie2SMT {
 		services.getResultService().reportResult(ModelCheckerUtils.PLUGIN_ID, result);
 		services.getProgressMonitorService().cancelToolchain();
 	}
-
-
 
 	public class ConstOnlyIdentifierTranslator implements IIdentifierTranslator {
 
@@ -209,10 +202,9 @@ public class Boogie2SMT {
 	}
 
 	/**
-	 * Simple translator for local variables and global variables that does not provide any side-effects
-	 * for getting inVars or outVars.
-	 * Use this in combination with {@link ConstOnlyIdentifierTranslator} to get a translator that has the capability
-	 * to translate expression to terms.
+	 * Simple translator for local variables and global variables that does not provide any side-effects for getting
+	 * inVars or outVars. Use this in combination with {@link ConstOnlyIdentifierTranslator} to get a translator that
+	 * has the capability to translate expression to terms.
 	 *
 	 */
 	public class LocalVarAndGlobalVarTranslator implements IIdentifierTranslator {
@@ -223,10 +215,8 @@ public class Boogie2SMT {
 			final IProgramVar pv = mBoogie2SmtSymbolTable.getBoogieVar(id, declInfo, isOldContext);
 			if (pv == null) {
 				return null;
-			} else {
-				return pv.getTermVariable();
 			}
+			return pv.getTermVariable();
 		}
-
 	}
 }

@@ -2,10 +2,10 @@ Manifest-Version: 1.0
 Bundle-ManifestVersion: 2
 Bundle-Name: CDTParser
 Bundle-SymbolicName: de.uni_freiburg.informatik.ultimate.cdt.parser;singleton:=true
-Bundle-Version: 0.1.25
+Bundle-Version: 0.1.24
 Require-Bundle: de.uni_freiburg.informatik.ultimate.lib.core,
  de.uni_freiburg.informatik.ultimate.core,
- org.eclipse.cdt.core;bundle-version="5.6.0",
+ org.eclipse.cdt.core,
  de.uni_freiburg.informatik.ultimate.acsl.parser,
  org.eclipse.core.resources,
  de.uni_freiburg.informatik.ultimate.lib.util

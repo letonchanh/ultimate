@@ -33,7 +33,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import org.eclipse.cdt.core.dom.ast.IASTCompoundStatement;
 import org.eclipse.cdt.core.dom.ast.IASTNode;
+import org.eclipse.cdt.core.dom.ast.IASTStatement;
+import org.eclipse.cdt.internal.core.dom.parser.c.CASTCompoundStatementExpression;
 
 import de.uni_freiburg.informatik.ultimate.boogie.ExpressionFactory;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.ArrayAccessExpression;
@@ -52,10 +55,15 @@ import de.uni_freiburg.informatik.ultimate.boogie.ast.UnaryExpression;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.VarList;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.VariableDeclaration;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.VariableLHS;
+import de.uni_freiburg.informatik.ultimate.boogie.type.BoogieArrayType;
+import de.uni_freiburg.informatik.ultimate.boogie.type.BoogiePrimitiveType;
 import de.uni_freiburg.informatik.ultimate.boogie.type.BoogieType;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.chandler.TypeSizes;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.container.AuxVarInfo;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.container.c.CArray;
+import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.container.c.CEnum;
+import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.container.c.CFunction;
+import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.container.c.CPointer;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.container.c.CPrimitive;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.container.c.CStructOrUnion;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.container.c.CStructOrUnion.StructOrUnion;
@@ -460,6 +468,98 @@ public class CTranslationUtil {
 			return result;
 		} else {
 			throw new AssertionError();
+		}
+	}
+
+	public static String getSmtSortStringForBoogieType(final BoogieType boogieType) {
+		if (boogieType instanceof BoogiePrimitiveType) {
+			final BoogiePrimitiveType boogiePrimitiveType = (BoogiePrimitiveType) boogieType;
+			if (boogiePrimitiveType.getTypeCode() == BoogiePrimitiveType.INT) {
+				return "Int";
+			} else if (boogiePrimitiveType.getTypeCode() == BoogiePrimitiveType.REAL) {
+				return "Real";
+			} else if (boogiePrimitiveType.getTypeCode() == BoogiePrimitiveType.BOOL) {
+				return "Bool";
+			} else if (boogiePrimitiveType.getTypeCode() >= 0) {
+				return String.format("(_ BitVec %s)", boogiePrimitiveType.getTypeCode());
+			} else {
+				throw new AssertionError("missing case");
+			}
+		} else if (boogieType instanceof BoogieArrayType) {
+			final BoogieArrayType boogieArrayType = (BoogieArrayType) boogieType;
+			String currentTypeString = getSmtSortStringForBoogieType(boogieArrayType.getValueType());
+			for (int i = boogieArrayType.getIndexCount() - 1; i >= 0; i--) {
+				currentTypeString = String.format("(Array %s %s)",
+						getSmtSortStringForBoogieType(boogieArrayType.getIndexType(i)),
+						currentTypeString);
+			}
+			return currentTypeString;
+		} else {
+			throw new AssertionError("missing case");
+		}
+	}
+
+	public static String getSmtZeroStringForBoogieType(final BoogieType boogieType) {
+		if (boogieType instanceof BoogiePrimitiveType) {
+			final BoogiePrimitiveType boogiePrimitiveType = (BoogiePrimitiveType) boogieType;
+			if (boogiePrimitiveType.getTypeCode() == BoogiePrimitiveType.INT) {
+				return "0";
+			} else if (boogiePrimitiveType.getTypeCode() == BoogiePrimitiveType.REAL) {
+				return "0.0";
+			} else if (boogiePrimitiveType.getTypeCode() == BoogiePrimitiveType.BOOL) {
+				return "false";
+			} else if (boogiePrimitiveType.getTypeCode() >= 0) {
+				return String.format("(_ bv0 %s)", boogiePrimitiveType.getTypeCode());
+			} else {
+				throw new AssertionError("missing case");
+			}
+		} else {
+			throw new AssertionError("missing case");
+		}
+	}
+
+	/**
+	 * The given hook may be a plain expression, in that case it is returned.
+	 * If the given hook is a Compound
+	 *
+	 * @param hook
+	 * @return
+	 */
+	public static IASTNode findExpressionHook(final IASTNode hook) {
+		if (hook instanceof CASTCompoundStatementExpression) {
+			final IASTCompoundStatement cs = ((CASTCompoundStatementExpression) hook).getCompoundStatement();
+			final IASTStatement lastStatement = cs.getStatements()[cs.getStatements().length - 1];
+			return findExpressionHook(lastStatement);
+		}
+
+		return hook;
+	}
+
+	public static long countNumberOfPrimitiveElementInType(final CType cTypeRaw) {
+		final CType cType = cTypeRaw.getUnderlyingType();
+		if (cType instanceof CPrimitive || cType instanceof CEnum || cType instanceof CPointer) {
+			return 1;
+		} else if (cType instanceof CFunction) {
+			assert false : "this is unexpected, a CFunction that is not wrapped inside a CPointer";
+		 	return 1;
+		} else if (cType instanceof CStructOrUnion && CStructOrUnion.isUnion(cType)) {
+		 	return 1;
+		} else if (cType instanceof CStructOrUnion && !CStructOrUnion.isUnion(cType)) {
+			final CStructOrUnion cStruct = (CStructOrUnion) cType;
+			long sum = 0;
+			for (final CType fieldType : cStruct.getFieldTypes()) {
+				sum += countNumberOfPrimitiveElementInType(fieldType);
+			}
+			return sum;
+		} else if (cType instanceof CArray) {
+			final CArray cArray = (CArray) cType;
+			final long innerCount = countNumberOfPrimitiveElementInType(cArray.getValueType());
+			final BigInteger boundBig = extractIntegerValue(cArray.getBound().getValue());
+			final long bound = boundBig.longValueExact();
+			return innerCount * bound;
+		} else {
+			assert false : "missed cType case?";
+		 	return 1;
 		}
 	}
 }

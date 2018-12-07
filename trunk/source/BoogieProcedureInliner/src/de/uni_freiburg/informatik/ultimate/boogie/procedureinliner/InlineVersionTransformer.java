@@ -46,6 +46,7 @@ import de.uni_freiburg.informatik.ultimate.boogie.ast.ArrayLHS;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.AssertStatement;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.AssignmentStatement;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.AssumeStatement;
+import de.uni_freiburg.informatik.ultimate.boogie.ast.AtomicStatement;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.Attribute;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.Body;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.BoogieASTNode;
@@ -83,6 +84,7 @@ import de.uni_freiburg.informatik.ultimate.boogie.procedureinliner.callgraph.Cal
 import de.uni_freiburg.informatik.ultimate.boogie.procedureinliner.exceptions.CancelToolchainException;
 import de.uni_freiburg.informatik.ultimate.boogie.procedureinliner.exceptions.InliningUnsupportedException;
 import de.uni_freiburg.informatik.ultimate.core.lib.exceptions.ToolchainCanceledException;
+import de.uni_freiburg.informatik.ultimate.core.lib.models.annotation.Overapprox;
 import de.uni_freiburg.informatik.ultimate.core.model.models.IBoogieType;
 import de.uni_freiburg.informatik.ultimate.core.model.models.ILocation;
 import de.uni_freiburg.informatik.ultimate.core.model.models.ModelUtils;
@@ -806,6 +808,10 @@ public class InlineVersionTransformer extends BoogieCopyTransformer {
 			final LoopInvariantSpecification[] newInvs = processLoopSpecifications(whileStat.getInvariants());
 			final Statement[] newBody = flattenStatementsArray(whileStat.getBody());
 			newStat = new WhileStatement(whileStat.getLocation(), newCond, newInvs, newBody);
+		} else if (stat instanceof AtomicStatement) {
+			final AtomicStatement atomicStat = (AtomicStatement) stat;
+			final Statement[] newBody = flattenStatementsArray(atomicStat.getBody());
+			newStat = new AtomicStatement(atomicStat.getLocation(), newBody);
 		}  else if (stat instanceof ForkStatement) {
 			getAndUpdateEdgeIndex();
 		}
@@ -1051,6 +1057,9 @@ public class InlineVersionTransformer extends BoogieCopyTransformer {
 		final AssumeStatement rtr = new AssumeStatement(callLocation,
 				new NamedAttribute[] { new NamedAttribute(callLocation, attrName, new Expression[] {}) },
 				new BooleanLiteral(callLocation, true));
+		if (!isReturn) {
+			ModelUtils.copyAnnotationsFiltered(callStmt, rtr, annot -> annot instanceof Overapprox);
+		}
 		addBacktranslation(rtr, null);
 		new InlinedCallAnnotation(callStmt, isReturn).annotate(rtr);
 		return rtr;

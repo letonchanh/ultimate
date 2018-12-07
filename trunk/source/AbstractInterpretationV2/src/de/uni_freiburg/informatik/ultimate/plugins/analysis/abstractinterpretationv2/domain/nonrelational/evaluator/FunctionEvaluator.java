@@ -28,8 +28,8 @@
 
 package de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.evaluator;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.Collection;
+import java.util.Collections;
 
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.absint.IAbstractState;
 import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.BooleanValue;
@@ -38,57 +38,52 @@ import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretati
 import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.NonrelationalEvaluationResult;
 import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.evaluator.EvaluatorUtils.EvaluatorType;
 
+/**
+ * Represents an Evaluator for a function symbol. Note that currently, this evaluator always returns &top; as the
+ * evaluation result and always the old state as the inverse evaluation result.
+ *
+ * @author Marius Greitschus (greitsch@informatik.uni-freiburg.de)
+ *
+ * @param <VALUE>
+ * @param <STATE>
+ */
 public class FunctionEvaluator<VALUE extends INonrelationalValue<VALUE>, STATE extends IAbstractState<STATE>>
-		implements IFunctionEvaluator<VALUE, STATE> {
+		extends Evaluator<VALUE, STATE> {
 
 	private final String mName;
 	private final int mInParamCount;
 	private final INonrelationalValueFactory<VALUE> mNonrelationalValueFactory;
 
-	private final List<IEvaluator<VALUE, STATE>> mInputParamEvaluators;
 	private final EvaluatorType mType;
 
-	public FunctionEvaluator(final String name, final int numInParams,
-			final INonrelationalValueFactory<VALUE> nonrelationalValueFactory, final EvaluatorType type) {
+	public FunctionEvaluator(final String name, final int numInParams, final int maxRecursionDepth,
+			final INonrelationalValueFactory<VALUE> nonrelationalValueFactory, final EvaluatorType type,
+			final EvaluatorLogger logger) {
+		super(maxRecursionDepth, nonrelationalValueFactory, logger);
 		mName = name;
 		mInParamCount = numInParams;
 		mNonrelationalValueFactory = nonrelationalValueFactory;
-		mInputParamEvaluators = new ArrayList<>();
 		mType = type;
 	}
 
 	@Override
-	public List<IEvaluationResult<VALUE>> evaluate(final STATE currentState) {
+	public Collection<IEvaluationResult<VALUE>> evaluate(final STATE currentState) {
 		assert currentState != null;
 
-		final List<IEvaluationResult<VALUE>> returnList = new ArrayList<>();
-		final IEvaluationResult<VALUE> res =
-				new NonrelationalEvaluationResult<>(mNonrelationalValueFactory.createTopValue(), BooleanValue.TOP);
-		returnList.add(res);
-
-		return returnList;
+		// Return a top value since functions cannot be handled, yet.
+		return Collections.singletonList(
+				new NonrelationalEvaluationResult<>(mNonrelationalValueFactory.createTopValue(), BooleanValue.TOP));
 	}
 
 	@Override
-	public List<STATE> inverseEvaluate(final IEvaluationResult<VALUE> computedValue, final STATE currentState) {
+	public Collection<STATE> inverseEvaluate(final IEvaluationResult<VALUE> computedValue, final STATE currentState) {
 		assert currentState != null;
-		final List<STATE> returnList = new ArrayList<>();
-		returnList.add(currentState);
-		return returnList;
-	}
-
-	@Override
-	public void addSubEvaluator(final IEvaluator<VALUE, STATE> evaluator) {
-		if (mInputParamEvaluators.size() < mInParamCount) {
-			mInputParamEvaluators.add(evaluator);
-		} else {
-			throw new UnsupportedOperationException("No space left to add sub evaluators to this function evaluator.");
-		}
+		return Collections.singletonList(currentState);
 	}
 
 	@Override
 	public boolean hasFreeOperands() {
-		return mInputParamEvaluators.size() < mInParamCount;
+		return getNumberOfSubEvaluators() < mInParamCount;
 	}
 
 	@Override
@@ -96,7 +91,9 @@ public class FunctionEvaluator<VALUE extends INonrelationalValue<VALUE>, STATE e
 		return false;
 	}
 
-	@Override
+	/**
+	 * @return The number of in-parameters for this function.
+	 */
 	public int getNumberOfInParams() {
 		return mInParamCount;
 	}
@@ -106,11 +103,11 @@ public class FunctionEvaluator<VALUE extends INonrelationalValue<VALUE>, STATE e
 		final StringBuilder sb = new StringBuilder();
 
 		sb.append(mName).append('(');
-		for (int i = 0; i < mInputParamEvaluators.size(); i++) {
+		for (int i = 0; i < getNumberOfSubEvaluators(); i++) {
 			if (i > 0) {
 				sb.append(", ");
 			}
-			sb.append(mInputParamEvaluators.get(i));
+			sb.append(getSubEvaluator(i));
 		}
 		sb.append(')');
 
@@ -121,5 +118,4 @@ public class FunctionEvaluator<VALUE extends INonrelationalValue<VALUE>, STATE e
 	public EvaluatorType getType() {
 		return mType;
 	}
-
 }

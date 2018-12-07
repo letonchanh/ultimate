@@ -7,6 +7,7 @@ import de.uni_freiburg.informatik.ultimate.core.model.services.ILogger;
 import de.uni_freiburg.informatik.ultimate.core.model.services.IToolchainStorage;
 import de.uni_freiburg.informatik.ultimate.core.model.services.IUltimateServiceProvider;
 import de.uni_freiburg.informatik.ultimate.lib.pea.CDD;
+import de.uni_freiburg.informatik.ultimate.lib.srparse.SrParseScopeAfter;
 import de.uni_freiburg.informatik.ultimate.lib.srparse.SrParseScopeGlob;
 import de.uni_freiburg.informatik.ultimate.lib.srparse.pattern.BndInvariancePattern;
 import de.uni_freiburg.informatik.ultimate.lib.srparse.pattern.BndResponsePatternTT;
@@ -25,22 +26,25 @@ import de.uni_freiburg.informatik.ultimate.modelcheckerutils.boogie.BoogieDeclar
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.SmtUtils;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.managedscript.ManagedScript;
 import de.uni_freiburg.informatik.ultimate.pea2boogie.CddToSmt;
-import de.uni_freiburg.informatik.ultimate.reqtotest.graphtransformer.ThreeValuedAuxVarGen;
+import de.uni_freiburg.informatik.ultimate.reqtotest.graphtransformer.AuxVarGen;
 
 public class ReqToGraph {
 	
 	private final ILogger mLogger;
 	
 	private final CddToSmt mCddToSmt;
+	private final ReqSymbolTable mReqSymbolTable;
 
-	private final ThreeValuedAuxVarGen mThreeValuedAuxVarGen;
+	private final AuxVarGen mThreeValuedAuxVarGen;
 	private final Script mScript;
 	
-	public ReqToGraph(final ILogger logger, ThreeValuedAuxVarGen threeValuedAuxVarGen, Script script, CddToSmt cddToSmt){
+	public ReqToGraph(final ILogger logger, AuxVarGen threeValuedAuxVarGen, Script script, CddToSmt cddToSmt,
+			ReqSymbolTable reqSymbolTable){
 		mLogger = logger;
 		mThreeValuedAuxVarGen = threeValuedAuxVarGen;
 		mCddToSmt = cddToSmt;
 		mScript = script;
+		mReqSymbolTable = reqSymbolTable;
 		
 	}
 	
@@ -48,10 +52,21 @@ public class ReqToGraph {
 		final List<ReqGuardGraph> gs = new ArrayList<ReqGuardGraph>();
 		for (PatternType pattern: patternList) {
 			if (! (pattern instanceof InitializationPattern)){
-				gs.add(patternToTestAutomaton(pattern));
+				ReqGuardGraph aut = patternToTestAutomaton(pattern);
+				if(aut != null) {
+					gs.add(aut);
+				}
 			}
 		}
 		return gs;
+	}
+	
+	private Term getDurationTerm(String duration) {
+		if (mReqSymbolTable.isConstVar(duration)) {
+			return mScript.variable(duration, mScript.sort("Real"));
+		} else {
+			return mScript.decimal(duration);
+		}
 	}
 	
 	 
@@ -95,20 +110,22 @@ public class ReqToGraph {
 			final Term R = mCddToSmt.toSmt(args.get(1));
 			final Term S = mCddToSmt.toSmt(args.get(0)); 
 			//create states to identify automaton
-			final ReqGuardGraph q0 = new ReqGuardGraph(0);
-			final ReqGuardGraph q1 = new ReqGuardGraph(1);
-			final ReqGuardGraph q2 = new ReqGuardGraph(2);
-			final ReqGuardGraph qw = new ReqGuardGraph(3);
+			String id = pattern.getId();
+			final ReqGuardGraph q0 = new ReqGuardGraph(0,id);
+			final ReqGuardGraph q1 = new ReqGuardGraph(1,id);
+			final ReqGuardGraph q2 = new ReqGuardGraph(2,id);
+			final ReqGuardGraph qw = new ReqGuardGraph(-1,id);
 			//create effect guards
+
 			mThreeValuedAuxVarGen.setEffectLabel(q0, S);
 			final String durationTrigger = pattern.getDuration().get(0);
 			final String durationEffect = pattern.getDuration().get(1);
 			TermVariable clockIdent = mThreeValuedAuxVarGen.generateClockIdent(q0);
 			//assuming RT-Consistency <>(\leq t) can be transformed into <>(==t)
-			Term triggerLess = SmtUtils.less(mScript, clockIdent, mScript.numeral(durationTrigger));
-			Term triggerEq = SmtUtils.binaryEquality(mScript, clockIdent, mScript.numeral(durationTrigger));	
-			Term effectLess = SmtUtils.less(mScript, clockIdent, mScript.numeral(durationEffect));
-			Term effectEq = SmtUtils.binaryEquality(mScript, clockIdent, mScript.numeral(durationEffect));
+			Term triggerLess = SmtUtils.less(mScript, clockIdent, getDurationTerm(durationTrigger));
+			Term triggerEq = SmtUtils.binaryEquality(mScript, clockIdent, getDurationTerm(durationTrigger));	
+			Term effectLess = SmtUtils.less(mScript, clockIdent, getDurationTerm(durationEffect));
+			Term effectEq = SmtUtils.binaryEquality(mScript, clockIdent, getDurationTerm(durationEffect));
 					//define labels 
 			final Term dS = mThreeValuedAuxVarGen.getDefineGuard(q0);
 			final Term ndS = mThreeValuedAuxVarGen.getNonDefineGuard(q0);
@@ -131,7 +148,8 @@ public class ReqToGraph {
 			
 			return q0;		
 		} else {
-			throw new RuntimeException("Scope not implemented");
+			scopeNotImplementedWarning(pattern);
+			return null;
 		}
 	}
 	
@@ -144,17 +162,18 @@ public class ReqToGraph {
 			final Term R = mCddToSmt.toSmt(args.get(1));
 			final Term S = mCddToSmt.toSmt(args.get(0)); 
 			//create states to identify automaton
-			final ReqGuardGraph q0 = new ReqGuardGraph(0);
-			final ReqGuardGraph q1 = new ReqGuardGraph(1);
-			final ReqGuardGraph q2 = new ReqGuardGraph(2);
-			final ReqGuardGraph qw = new ReqGuardGraph(3);
+			String id = pattern.getId();
+			final ReqGuardGraph q0 = new ReqGuardGraph(0, id);
+			final ReqGuardGraph q1 = new ReqGuardGraph(1, id);
+			final ReqGuardGraph q2 = new ReqGuardGraph(2, id);
+			final ReqGuardGraph qw = new ReqGuardGraph(-1, id);
 			//create effect guards
 			mThreeValuedAuxVarGen.setEffectLabel(q0, S);
 			final String duration = pattern.getDuration().get(0);
 			TermVariable clockIdent = mThreeValuedAuxVarGen.generateClockIdent(q0);
 			//assuming RT-Consistency <>(\leq t) can be transformed into <>(==t)
-			Term triggerLess = SmtUtils.less(mScript, clockIdent, mScript.numeral(duration));
-			Term triggerEq = SmtUtils.binaryEquality(mScript, clockIdent, mScript.numeral(duration));	
+			Term triggerLess = SmtUtils.less(mScript, clockIdent, getDurationTerm(duration));
+			Term triggerEq = SmtUtils.binaryEquality(mScript, clockIdent, getDurationTerm(duration));	
 					//define labels 
 			final Term dS = mThreeValuedAuxVarGen.getDefineGuard(q0);
 			final Term ndS = mThreeValuedAuxVarGen.getNonDefineGuard(q0);
@@ -180,7 +199,8 @@ public class ReqToGraph {
 			
 			return q0;		
 		} else {
-			throw new RuntimeException("Scope not implemented");
+			scopeNotImplementedWarning(pattern);
+			return null;
 		}
 	}
 	
@@ -193,15 +213,16 @@ public class ReqToGraph {
 			final Term R = mCddToSmt.toSmt(args.get(1));
 			final Term S = mCddToSmt.toSmt(args.get(0)); 
 			//create states to identify automaton
-			final ReqGuardGraph q0 = new ReqGuardGraph(0);
-			final ReqGuardGraph q1 = new ReqGuardGraph(1);
-			final ReqGuardGraph qw = new ReqGuardGraph(2);
+			String id = pattern.getId();
+			final ReqGuardGraph q0 = new ReqGuardGraph(0, id);
+			final ReqGuardGraph q1 = new ReqGuardGraph(1, id);
+			final ReqGuardGraph qw = new ReqGuardGraph(-1, id);
 			//create effect guards
 			mThreeValuedAuxVarGen.setEffectLabel(q0, S);
 			final String duration = pattern.getDuration().get(0);
 			TermVariable clockIdent = mThreeValuedAuxVarGen.generateClockIdent(q0);
-			Term clockGuard = SmtUtils.leq(mScript, clockIdent, mScript.numeral(duration));	
-			Term clockGuardGeq = SmtUtils.greater(mScript, clockIdent, mScript.numeral(duration));	
+			Term clockGuard = SmtUtils.leq(mScript, clockIdent, getDurationTerm(duration));	
+			Term clockGuardGeq = SmtUtils.greater(mScript, clockIdent, getDurationTerm(duration));	
 					//define labels 
 			final Term dS = mThreeValuedAuxVarGen.getDefineGuard(q0);
 			final Term ndS = mThreeValuedAuxVarGen.getNonDefineGuard(q0);
@@ -223,7 +244,8 @@ public class ReqToGraph {
 			
 			return q0;		
 		} else {
-			throw new RuntimeException("Scope not implemented");
+			scopeNotImplementedWarning(pattern);
+			return null;
 		}
 	}
 	
@@ -238,18 +260,19 @@ public class ReqToGraph {
 			final Term R = mCddToSmt.toSmt(args.get(1));
 			final Term S = mCddToSmt.toSmt(args.get(0)); 
 			//create states to identify automaton
-			final ReqGuardGraph q0 = new ReqGuardGraph(0);
-			final ReqGuardGraph q1 = new ReqGuardGraph(1);
-			final ReqGuardGraph q2 = new ReqGuardGraph(2);
-			final ReqGuardGraph qw = new ReqGuardGraph(3);
+			String id = pattern.getId();
+			final ReqGuardGraph q0 = new ReqGuardGraph(0, id);
+			final ReqGuardGraph q1 = new ReqGuardGraph(1, id);
+			final ReqGuardGraph q2 = new ReqGuardGraph(2, id);
+			final ReqGuardGraph qw = new ReqGuardGraph(-1, id);
 			//create effect guards
 			mThreeValuedAuxVarGen.setEffectLabel(q0, S);
 			final String duration = pattern.getDuration().get(0);
 			TermVariable clockIdent = mThreeValuedAuxVarGen.generateClockIdent(q0);
 			//assuming RT-Consistency <>(\leq t) can be transformed into <>(==t)
-			Term clockGuardLess = SmtUtils.less(mScript, clockIdent, mScript.numeral(duration));
-			Term clockGuardEq = SmtUtils.binaryEquality(mScript, clockIdent, mScript.numeral(duration));	
-			Term clockGuardGeq = SmtUtils.geq(mScript, clockIdent, mScript.numeral(duration));
+			Term clockGuardLess = SmtUtils.less(mScript, clockIdent, getDurationTerm(duration));
+			Term clockGuardEq = SmtUtils.binaryEquality(mScript, clockIdent, getDurationTerm(duration));	
+			Term clockGuardGeq = SmtUtils.geq(mScript, clockIdent, getDurationTerm(duration));
 			//define labels 
 			final Term dS = mThreeValuedAuxVarGen.getDefineGuard(q0);
 			final Term ndS = mThreeValuedAuxVarGen.getNonDefineGuard(q0);
@@ -272,7 +295,7 @@ public class ReqToGraph {
 															SmtUtils.and(mScript, R, uR, ndS, clockGuardLess),
 															SmtUtils.and(mScript, R, uR, S, dS, clockGuardGeq))
 																)));
-			q1.connectOutgoing(q0, new TimedLabel(SmtUtils.and(mScript, nR, uR, ndS, clockGuardGeq)));
+			q1.connectOutgoing(q0, new TimedLabel(SmtUtils.and(mScript, nR, uR, ndS, clockGuardEq)));
 			q1.connectOutgoing(q2, new TimedLabel(SmtUtils.and(mScript, clockGuardLess, ndS, 
 													SmtUtils.or(mScript, 
 															SmtUtils.and(mScript, uR, nR),
@@ -289,8 +312,74 @@ public class ReqToGraph {
 			qw.connectOutgoing(q1, new TimedLabel(SmtUtils.and(mScript, uR, R, ndS), clockIdent));
 			
 			return q0;		
+		} else if(pattern.getScope() instanceof SrParseScopeAfter) {
+			final List<CDD> args = pattern.getCdds();
+			final Term R = mCddToSmt.toSmt(args.get(1));
+			final Term S = mCddToSmt.toSmt(args.get(0)); 
+			final Term Q = mCddToSmt.toSmt(pattern.getScope().getCdd1()); 
+			//create states to identify automaton
+			String id = pattern.getId();
+			final ReqGuardGraph q0 = new ReqGuardGraph(0, id); 
+			final ReqGuardGraph q1 = new ReqGuardGraph(1, id);
+			final ReqGuardGraph q2 = new ReqGuardGraph(2, id);
+			final ReqGuardGraph q3 = new ReqGuardGraph(3, id);
+			final ReqGuardGraph qw = new ReqGuardGraph(-1, id);
+			//create effect guards
+			mThreeValuedAuxVarGen.setEffectLabel(q1, S);
+			final String duration = pattern.getDuration().get(0);
+			TermVariable clockIdent = mThreeValuedAuxVarGen.generateClockIdent(q1);
+			//assuming RT-Consistency <>(\leq t) can be transformed into <>(==t)
+			Term clockGuardLess = SmtUtils.less(mScript, clockIdent, getDurationTerm(duration));
+			Term clockGuardEq = SmtUtils.binaryEquality(mScript, clockIdent, getDurationTerm(duration));	
+			Term clockGuardGeq = SmtUtils.geq(mScript, clockIdent, getDurationTerm(duration));
+			//define labels 
+			final Term dS = mThreeValuedAuxVarGen.getDefineGuard(q1);
+			final Term ndS = mThreeValuedAuxVarGen.getNonDefineGuard(q1);
+			//normal labels
+			final Term uR = mThreeValuedAuxVarGen.getUseGuard(R);
+			final Term nuR = SmtUtils.not(mScript, uR); 
+			final Term uS = mThreeValuedAuxVarGen.getUseGuard(S);
+			final Term nR = SmtUtils.not(mScript, R);
+			final Term nQ = SmtUtils.not(mScript, Q);
+			final Term uQ = mThreeValuedAuxVarGen.getUseGuard(Q);
+			final Term nuQ = SmtUtils.not(mScript, Q);
+			
+			//regular automaton
+			q0.connectOutgoing(q0, new TimedLabel(SmtUtils.and(mScript, nuQ, nQ, ndS)));
+			q0.connectOutgoing(q1, new TimedLabel(SmtUtils.and(mScript, Q, uQ, ndS)));
+			q0.connectOutgoing(q2, new TimedLabel(SmtUtils.and(mScript, uR, R, ndS, Q, uQ), clockIdent));
+			q1.connectOutgoing(q1, new TimedLabel(
+					SmtUtils.and(mScript, ndS,
+							SmtUtils.or(mScript,
+								SmtUtils.and(mScript, uR, nR),
+								SmtUtils.and(mScript, uS, S))
+									)));
+			q1.connectOutgoing(q2, new TimedLabel(SmtUtils.and(mScript, uR, R, ndS), clockIdent));
+			q2.connectOutgoing(q2, new TimedLabel(SmtUtils.and(mScript,
+													SmtUtils.or(mScript,
+															SmtUtils.and(mScript, R, uR, ndS, clockGuardLess),
+															SmtUtils.and(mScript, R, uR, S, dS, clockGuardGeq))
+																)));
+			q2.connectOutgoing(q1, new TimedLabel(SmtUtils.and(mScript, nR, uR, ndS, clockGuardGeq)));
+			q2.connectOutgoing(q3, new TimedLabel(SmtUtils.and(mScript, clockGuardLess, ndS, 
+													SmtUtils.or(mScript, 
+															SmtUtils.and(mScript, uR, nR),
+															SmtUtils.and(mScript, nuR))
+																)));
+			q3.connectOutgoing(q3, new TimedLabel(SmtUtils.and(mScript, clockGuardLess, ndS)));
+			q3.connectOutgoing(q1, new TimedLabel(SmtUtils.and(mScript, clockGuardEq, S, dS)));
+			// uncertainty
+			q1.connectOutgoing(qw, new TimedLabel(SmtUtils.and(mScript, nuR, ndS)));
+			qw.connectOutgoing(qw, new TimedLabel(SmtUtils.and(mScript, nuR, ndS)));
+			qw.connectOutgoing(q1, new TimedLabel(SmtUtils.or(mScript, 
+					SmtUtils.and(mScript, uR, nR, ndS),
+					SmtUtils.and(mScript, uS, S, ndS))));
+			qw.connectOutgoing(q2, new TimedLabel(SmtUtils.and(mScript, uR, R, ndS), clockIdent));
+			
+			return q0;		
 		} else {
-			throw new RuntimeException("Scope not implemented");
+			scopeNotImplementedWarning(pattern);
+			return null;
 		}
 	}
 	
@@ -302,7 +391,8 @@ public class ReqToGraph {
 			final List<CDD> args = pattern.getCdds();
 			final Term R = mCddToSmt.toSmt(args.get(1));
 			final Term S = mCddToSmt.toSmt(args.get(0)); 
-			final ReqGuardGraph q0 = new ReqGuardGraph(0);
+			String id = pattern.getId();
+			final ReqGuardGraph q0 = new ReqGuardGraph(0, id);
 			mThreeValuedAuxVarGen.setEffectLabel(q0, S);
 			//define labels 
 			final Term dS = mThreeValuedAuxVarGen.getDefineGuard(q0);
@@ -319,7 +409,8 @@ public class ReqToGraph {
 					SmtUtils.and(mScript, S, uS, ndS))));
 			return q0;
 		} else {
-			throw new RuntimeException("Scope not implemented");
+			scopeNotImplementedWarning(pattern);
+			return null;
 		}
 	}
 	
@@ -330,7 +421,8 @@ public class ReqToGraph {
 		if(pattern.getScope() instanceof SrParseScopeGlob) {
 			final List<CDD> args = pattern.getCdds();
 			final Term S = mCddToSmt.toSmt(args.get(0)); 
-			final ReqGuardGraph q0 = new ReqGuardGraph(0);
+			String id = pattern.getId();
+			final ReqGuardGraph q0 = new ReqGuardGraph(0, id);
 			mThreeValuedAuxVarGen.setEffectLabel(q0, S);
 			//define labels 
 			final Term dS = mThreeValuedAuxVarGen.getDefineGuard(q0);
@@ -338,7 +430,8 @@ public class ReqToGraph {
 			q0.connectOutgoing(q0, new TimedLabel(SmtUtils.and(mScript, S, dS)));
 			return q0;
 		} else {
-			throw new RuntimeException("Scope not implemented");
+			scopeNotImplementedWarning(pattern);
+			return null;
 		}
 	}
 	
@@ -349,7 +442,8 @@ public class ReqToGraph {
 		if(pattern.getScope() instanceof SrParseScopeGlob) {
 			final List<CDD> args = pattern.getCdds();
 			final Term S = mCddToSmt.toSmt(args.get(0)); 
-			final ReqGuardGraph q0 = new ReqGuardGraph(0);
+			String id = pattern.getId();
+			final ReqGuardGraph q0 = new ReqGuardGraph(0, id);
 			mThreeValuedAuxVarGen.setEffectLabel(q0, S);
 			//define labels 
 			final Term dS = mThreeValuedAuxVarGen.getDefineGuard(q0);
@@ -358,7 +452,8 @@ public class ReqToGraph {
 			q0.connectOutgoing(q0, new TimedLabel(SmtUtils.and(mScript, nS, dS)));
 			return q0;
 		} else {
-			throw new RuntimeException("Scope not implemented");
+			scopeNotImplementedWarning(pattern);
+			return null;
 		}
 	}
 	
@@ -368,12 +463,13 @@ public class ReqToGraph {
 	private ReqGuardGraph getImmediateResponsePatternToAutomaton(PatternType pattern){
 		if(pattern.getScope() instanceof SrParseScopeGlob) {
 			final List<CDD> args = pattern.getCdds();
+			String id = pattern.getId();
 			final Term R = mCddToSmt.toSmt(args.get(1));
 			final Term S = mCddToSmt.toSmt(args.get(0)); 
 			//create states to identify automaton
-			final ReqGuardGraph q0 = new ReqGuardGraph(0);
-			final ReqGuardGraph q1 = new ReqGuardGraph(1);
-			final ReqGuardGraph qw = new ReqGuardGraph(2);
+			final ReqGuardGraph q0 = new ReqGuardGraph(0, id);
+			final ReqGuardGraph q1 = new ReqGuardGraph(1, id);
+			final ReqGuardGraph qw = new ReqGuardGraph(-1, id);
 			//create effect guards
 			mThreeValuedAuxVarGen.setEffectLabel(q0, S);
 			//define labels 
@@ -399,8 +495,19 @@ public class ReqToGraph {
 			
 			return q0;		
 		} else {
-			throw new RuntimeException("Scope not implemented");
+			scopeNotImplementedWarning(pattern);
+			return null;
 		}
+	}
+	
+	private void scopeNotImplementedWarning(PatternType pattern) {
+		StringBuilder sb = new StringBuilder();
+		sb.append("Scope not implemented: ");
+		sb.append(pattern.getScope().toString());
+		sb.append(" [in: ");
+		sb.append(pattern.getId());
+		sb.append(" ]");
+		mLogger.warn(sb.toString());
 	}
 	
 	

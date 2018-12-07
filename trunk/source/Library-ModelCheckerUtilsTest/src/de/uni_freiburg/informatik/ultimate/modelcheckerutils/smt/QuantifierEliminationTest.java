@@ -46,6 +46,8 @@ import de.uni_freiburg.informatik.ultimate.logic.Script.LBool;
 import de.uni_freiburg.informatik.ultimate.logic.Sort;
 import de.uni_freiburg.informatik.ultimate.logic.Term;
 import de.uni_freiburg.informatik.ultimate.logic.TermVariable;
+import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.SmtFunctionDefinition;
+import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.SmtSymbols;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.SmtUtils.SimplificationTechnique;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.SmtUtils.XnfConversionTechnique;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.linearterms.PrenexNormalForm;
@@ -266,6 +268,63 @@ public class QuantifierEliminationTest {
 		Assert.assertTrue(!(result instanceof QuantifiedFormula));
 	}
 
+	/**
+	 * Quantifier elimination use case that comes from using constant arrays to initialize array variables in the C to
+	 * Boogie translation. Variant where the helper function is inlined.
+	 *
+	 * @author Alexander Nutz (nutz@informatik.uni-freiburg.de)
+	 */
+	@Test
+	public void constantArrayTest01() {
+		mScript.declareFun("a", new Sort[0],
+				SmtSortUtils.getArraySort(mScript, mIntSort, SmtSortUtils.getArraySort(mScript, mIntSort, mIntSort)));
+		mScript.declareFun("i", new Sort[0], mIntSort);
+
+		final String formulaAsString =
+				"(exists ((v_a (Array Int (Array Int Int)))) " + "(= a (store v_a i ((as const (Array Int Int)) 0))))";
+		final Term formulaAsTerm = TermParseUtils.parseTerm(mScript, formulaAsString);
+		// mLogger.info("Input: " + formulaAsTerm.toStringDirect());
+		final Term result = elim(formulaAsTerm);
+		mLogger.info("Result: " + result.toStringDirect());
+		Assert.assertTrue(!(result instanceof QuantifiedFormula));
+	}
+
+	/**
+	 * Quantifier elimination use case that comes from using constant arrays to initialize array variables in the C to
+	 * Boogie translation. Variant where a helper function is used that is defined via define-function. (Perhaps this
+	 * makes no difference.)
+	 *
+	 * @author Alexander Nutz (nutz@informatik.uni-freiburg.de)
+	 */
+	@Test
+	public void constantArrayTest02() {
+		final Sort arrayFromIntToIntToInt =
+				SmtSortUtils.getArraySort(mScript, mIntSort, SmtSortUtils.getArraySort(mScript, mIntSort, mIntSort));
+
+		final String[] paramIds = { "a", "i" };
+		final Sort[] paramSorts = new Sort[] { arrayFromIntToIntToInt, mIntSort };
+		final Sort resultSort = arrayFromIntToIntToInt;
+		final String functionDefinitionAsString = "(store a i ((as const (Array Int Int)) 0))";
+		final SmtFunctionDefinition additionalFunction = SmtFunctionDefinition.create(mScript,
+				"~initToZeroAtPointerBaseAddress~int", functionDefinitionAsString, paramIds, paramSorts, resultSort);
+		final SmtSymbols smtSymbols = new SmtSymbols(mScript).addFunction(mScript, additionalFunction);
+
+		mScript.declareFun("b", new Sort[0], arrayFromIntToIntToInt);
+		mScript.declareFun("j", new Sort[0], mIntSort);
+		final String formulaAsString =
+				"(exists ((v_a (Array Int (Array Int Int)))) " + "(= b (~initToZeroAtPointerBaseAddress~int v_a j)))";
+		final Term formulaAsTerm = TermParseUtils.parseTerm(mScript, formulaAsString);
+		mLogger.info("Before inlining: " + formulaAsTerm.toStringDirect());
+		final Term inlined = smtSymbols.inline(mScript, formulaAsTerm);
+		mLogger.info("After inlining : " + inlined.toStringDirect());
+		final LBool isDistinct = SmtUtils.checkSatTerm(mScript, mScript.term("distinct", formulaAsTerm, inlined));
+		mLogger.info("isDistinct     : " + isDistinct);
+		Assert.assertTrue(isDistinct == LBool.UNSAT);
+		final Term result = elim(inlined);
+		mLogger.info("Result         : " + result.toStringDirect());
+		Assert.assertTrue(!(result instanceof QuantifiedFormula));
+	}
+
 	private Term createQuantifiedFormulaFromString(final int quantor, final String quantVars,
 			final String formulaAsString) {
 		// TODO: DD: Somehow the quantified formulas are too large / strange for TermParseUtils.parseTerm, but this way
@@ -302,6 +361,10 @@ public class QuantifierEliminationTest {
 				SimplificationTechnique.NONE, XnfConversionTechnique.BOTTOM_UP_WITH_LOCAL_SIMPLIFICATION);
 	}
 
+	/**
+	 * Special method for partial quantifier elimination that applies only local elimination techniques and replaces the
+	 * outermost quantifier by an existential quantifier.
+	 */
 	private Term elim2(final Term term) {
 		final QuantifiedFormula quantFormula = (QuantifiedFormula) term;
 		return PartialQuantifierElimination.quantifierCustom(mServices, mLogger, mMgdScript, PqeTechniques.ALL_LOCAL,

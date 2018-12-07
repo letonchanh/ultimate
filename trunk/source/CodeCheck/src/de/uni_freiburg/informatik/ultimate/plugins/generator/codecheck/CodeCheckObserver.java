@@ -90,7 +90,6 @@ import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.SmtUtils.XnfCon
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.SolverBuilder;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.SolverBuilder.SolverMode;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.SolverBuilder.SolverSettings;
-import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.TermTransferrer;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.biesenb.BPredicateUnifier;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.managedscript.ManagedScript;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.predicates.IPredicate;
@@ -174,6 +173,10 @@ public class CodeCheckObserver implements IUnmanagedObserver {
 	 * @return
 	 */
 	private boolean initialize(final IIcfg<IcfgLocation> root) {
+		if (!root.getCfgSmtToolkit().getConcurrencyInformation().getThreadInstanceMap().isEmpty()) {
+			throw new UnsupportedOperationException("Concurrent programs are currently unsupported");
+		}
+
 		readPreferencePage();
 		mOriginalRoot = root;
 		mCsToolkit = mOriginalRoot.getCfgSmtToolkit();
@@ -447,9 +450,7 @@ public class CodeCheckObserver implements IUnmanagedObserver {
 							"TraceCheck_Iteration" + iterationsCount);
 
 					mgdScriptTracechecks = new ManagedScript(mServices, tcSolver);
-					final TermTransferrer tt = new TermTransferrer(tcSolver);
-					final Term axioms = mOriginalRoot.getCfgSmtToolkit().getAxioms().getFormula();
-					tcSolver.assertTerm(tt.transform(axioms));
+					mOriginalRoot.getCfgSmtToolkit().getSmtSymbols().transferSymbols(tcSolver);
 				} else {
 					mgdScriptTracechecks = mCsToolkit.getManagedScript();
 				}

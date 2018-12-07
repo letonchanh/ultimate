@@ -42,6 +42,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
 
 import de.uni_freiburg.informatik.ultimate.boogie.BoogieUtils;
+import de.uni_freiburg.informatik.ultimate.boogie.ExpressionFactory;
 import de.uni_freiburg.informatik.ultimate.core.lib.exceptions.ToolchainCanceledException;
 import de.uni_freiburg.informatik.ultimate.core.model.services.ILogger;
 import de.uni_freiburg.informatik.ultimate.core.model.services.IUltimateServiceProvider;
@@ -351,7 +352,7 @@ public final class SmtUtils {
 		assert a.getSort().isArraySort();
 		Term result = a;
 		for (int i = 0; i < index.size(); i++) {
-			result = script.term("select", result, index.get(i));
+			result = SmtUtils.select(script, result, index.get(i));
 		}
 		return result;
 	}
@@ -368,7 +369,7 @@ public final class SmtUtils {
 		Term result = value;
 		for (int i = index.size() - 1; i >= 0; i--) {
 			final Term selectUpToI = multiDimensionalSelect(script, a, index.getFirst(i));
-			result = script.term("store", selectUpToI, index.get(i), result);
+			result = SmtUtils.store(script, selectUpToI, index.get(i), result);
 		}
 		return result;
 	}
@@ -555,11 +556,38 @@ public final class SmtUtils {
 		final Sort sort = operand.getSort();
 		assert SmtSortUtils.isNumericSort(sort) || SmtSortUtils.isBitvecSort(sort);
 		if (SmtSortUtils.isNumericSort(sort)) {
-			return script.term("-", operand);
+			return unaryNumericMinus(script, operand);
 		} else if (SmtSortUtils.isBitvecSort(sort)) {
-			return script.term("bvneg", operand);
+			return BitvectorUtils.termWithLocalSimplification(script, "bvneg", null, operand);
 		} else {
 			throw new UnsupportedOperationException(ERROR_MSG_UNKNOWN_SORT + sort);
+		}
+	}
+
+	public static Term unaryNumericMinus(final Script script, final Term operand) {
+		if (operand instanceof ConstantTerm) {
+			final ConstantTerm ct = (ConstantTerm) operand;
+			final Rational value = convertConstantTermToRational(ct);
+			return value.negate().toTerm(operand.getSort());
+		} else if (operand instanceof ApplicationTerm) {
+			final ApplicationTerm appTerm = (ApplicationTerm) operand;
+			if (appTerm.getFunction().isIntern()) {
+				if (isUnaryNumericMinus(appTerm.getFunction())) {
+					return appTerm.getParameters()[0];
+				} else if (appTerm.getFunction().getName().equals("+")) {
+					return sum(script, operand.getSort(), Arrays.stream(appTerm.getParameters())
+							.map(x -> unaryNumericMinus(script, x)).toArray(Term[]::new));
+				} else {
+					// TODO: handle all theory-defined functions
+					return script.term("-", operand);
+				}
+			}
+			return script.term("-", operand);
+		} else if (operand instanceof TermVariable) {
+			return script.term("-", operand);
+		} else {
+			throw new UnsupportedOperationException(
+					"cannot apply unary minus to " + operand.getClass().getSimpleName());
 		}
 	}
 
@@ -718,7 +746,7 @@ public final class SmtUtils {
 	 * @return ("=" ("select" array index) value)
 	 */
 	private static Term setArrayCellValue(final Script script, final Term array, final Term index, final Term value) {
-		final Term select = script.term("select", array, index);
+		final Term select = SmtUtils.select(script, array, index);
 		return SmtUtils.binaryEquality(script, select, value);
 	}
 
@@ -762,19 +790,14 @@ public final class SmtUtils {
 	 * Returns true, iff the term contains an application of the given functionName
 	 */
 	public static boolean containsFunctionApplication(final Term term, final String functionName) {
-		return containsFunctionApplication(term, Arrays.asList(functionName));
+		return !new ApplicationTermFinder(functionName, true).findMatchingSubterms(term).isEmpty();
 	}
 
 	/**
 	 * Returns true, iff the term contains an application of at least one of the the given functionNames
 	 */
-	public static boolean containsFunctionApplication(final Term term, final Iterable<String> functionNames) {
-		for (final String f : functionNames) {
-			if (!new ApplicationTermFinder(f, true).findMatchingSubterms(term).isEmpty()) {
-				return true;
-			}
-		}
-		return false;
+	public static boolean containsFunctionApplication(final Term term, final Collection<String> functionNames) {
+		return !new ApplicationTermFinder(new HashSet<>(functionNames), true).findMatchingSubterms(term).isEmpty();
 	}
 
 	public static boolean containsArrayVariables(final Term... terms) {
@@ -1147,53 +1170,6 @@ public final class SmtUtils {
 	}
 
 	/**
-	 * Convert a BigDecimal into a Rational. Stolen from Jochen's code
-	 * de.uni_freiburg.informatik.ultimate.smtinterpol.convert.ConvertFormula.
-	 */
-	public static Rational decimalToRational(final BigDecimal d) {
-		Rational rat;
-		if (d.scale() <= 0) {
-			final BigInteger num = d.toBigInteger();
-			rat = Rational.valueOf(num, BigInteger.ONE);
-		} else {
-			final BigInteger num = d.unscaledValue();
-			final BigInteger denom = BigInteger.TEN.pow(d.scale());
-			rat = Rational.valueOf(num, denom);
-		}
-		return rat;
-	}
-
-	/**
-	 * Convert a constant term to Rational.
-	 *
-	 * @param ct
-	 *            constant term that represents a Rational
-	 * @return Rational from the value of ct
-	 * @throws IllegalArgumentException
-	 *             if ct does not represent a Rational.
-	 * @deprecated replace this method by convertConstantTermToRational()
-	 */
-	@Deprecated
-	public static Rational convertCT(final ConstantTerm ct) throws IllegalArgumentException {
-		if (SmtSortUtils.isRealSort(ct.getSort())) {
-			if (ct.getValue() instanceof Rational) {
-				return (Rational) ct.getValue();
-			} else if (ct.getValue() instanceof BigDecimal) {
-				return decimalToRational((BigDecimal) ct.getValue());
-			} else {
-				throw new UnsupportedOperationException("ConstantTerm's value has to be either Rational or BigDecimal");
-			}
-		} else if (SmtSortUtils.isIntSort(ct.getSort())) {
-			if (ct.getValue() instanceof Rational) {
-				return (Rational) ct.getValue();
-			}
-			return Rational.valueOf((BigInteger) ct.getValue(), BigInteger.ONE);
-		} else {
-			throw new IllegalArgumentException("Trying to convert a ConstantTerm of unknown sort." + ct);
-		}
-	}
-
-	/**
 	 * Construct term but simplify it using lightweight simplification techniques if applicable.
 	 */
 	public static Term termWithLocalSimplification(final Script script, final String funcname,
@@ -1238,9 +1214,10 @@ public final class SmtUtils {
 			result = SmtUtils.sum(script, funcname, params);
 			break;
 		case "-":
-		case "bvminus":
+		case "bvsub":
 			if (params.length == 1) {
-				result = SmtUtils.neg(script, params[0]);
+				assert !funcname.equals("bvsub");
+				result = SmtUtils.unaryNumericMinus(script, params[0]);
 			} else {
 				result = SmtUtils.minus(script, params);
 			}
@@ -1278,7 +1255,6 @@ public final class SmtUtils {
 			break;
 		case "zero_extend":
 		case "extract":
-		case "bvsub":
 			// case "bvmul":
 		case "bvudiv":
 		case "bvurem":
@@ -1526,20 +1502,15 @@ public final class SmtUtils {
 	}
 
 	public static Rational toRational(final BigInteger bigInt) {
-		return Rational.valueOf(bigInt, BigInteger.ONE);
+		return ExpressionFactory.toRational(bigInt);
 	}
 
 	public static Rational toRational(final BigDecimal bigDec) {
-		Rational rat;
-		if (bigDec.scale() <= 0) {
-			final BigInteger num = bigDec.toBigInteger();
-			rat = Rational.valueOf(num, BigInteger.ONE);
-		} else {
-			final BigInteger num = bigDec.unscaledValue();
-			final BigInteger denom = BigInteger.TEN.pow(bigDec.scale());
-			rat = Rational.valueOf(num, denom);
-		}
-		return rat;
+		return ExpressionFactory.toRational(bigDec);
+	}
+
+	public static Rational toRational(final String realLiteralValue) {
+		return ExpressionFactory.toRational(realLiteralValue);
 	}
 
 	public static Term rational2Term(final Script script, final Rational rational, final Sort sort) {
@@ -1629,7 +1600,7 @@ public final class SmtUtils {
 			}
 		} else if (SmtSortUtils.isRealSort(constTerm.getSort())) {
 			if (value instanceof BigDecimal) {
-				rational = decimalToRational((BigDecimal) value);
+				rational = toRational((BigDecimal) value);
 			} else if (value instanceof Rational) {
 				rational = (Rational) value;
 			} else {
@@ -1966,6 +1937,11 @@ public final class SmtUtils {
 	 */
 	public static QuotedObject echo(final Script script, final String message) {
 		return script.echo(new QuotedObject(message));
+	}
+
+	public static boolean isUnaryNumericMinus(final FunctionSymbol function) {
+		return function.isIntern() && function.getName().equals("-") && function.getParameterSorts().length == 1
+				&& function.getParameterSorts()[0].isNumericSort() && function.getReturnSort().isNumericSort();
 	}
 
 	private static class InnerDualJunctTracker {

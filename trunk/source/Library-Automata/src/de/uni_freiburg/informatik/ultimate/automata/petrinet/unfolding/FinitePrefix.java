@@ -32,6 +32,7 @@ import de.uni_freiburg.informatik.ultimate.automata.AutomataOperationStatistics;
 import de.uni_freiburg.informatik.ultimate.automata.StatisticsType;
 import de.uni_freiburg.informatik.ultimate.automata.petrinet.IPetriNet;
 import de.uni_freiburg.informatik.ultimate.automata.petrinet.IPetriNetSuccessorProvider;
+import de.uni_freiburg.informatik.ultimate.automata.petrinet.PetriNetNot1SafeException;
 import de.uni_freiburg.informatik.ultimate.automata.petrinet.UnaryNetOperation;
 import de.uni_freiburg.informatik.ultimate.automata.petrinet.unfolding.PetriNetUnfolder.UnfoldingOrder;
 import de.uni_freiburg.informatik.ultimate.automata.statefactory.IStateFactory;
@@ -54,12 +55,12 @@ public final class FinitePrefix<LETTER, STATE> extends UnaryNetOperation<LETTER,
 
 
 	public FinitePrefix(final AutomataLibraryServices services, final IPetriNetSuccessorProvider<LETTER, STATE> operand)
-			throws AutomataOperationCanceledException {
+			throws AutomataOperationCanceledException, PetriNetNot1SafeException {
 		this(services, operand, false);
 	}
-	
+
 	public FinitePrefix(final AutomataLibraryServices services, final IPetriNetSuccessorProvider<LETTER, STATE> operand,
-			boolean sameTransitionCutOff) throws AutomataOperationCanceledException {
+			final boolean sameTransitionCutOff) throws AutomataOperationCanceledException, PetriNetNot1SafeException {
 		super(services);
 		mOperand = operand;
 
@@ -97,13 +98,18 @@ public final class FinitePrefix<LETTER, STATE> extends UnaryNetOperation<LETTER,
 
 		final int numberConditions = new NumberOfConditions<>(mServices, getResult()).getResult();
 		statistics.addKeyValuePair(StatisticsType.NUMBER_CONDITIONS, numberConditions);
-		statistics.addKeyValuePair(StatisticsType.NUMBER_CO_RELATION_QUERIES, mUnfoldingStatistics.getCoRelationQueries());
+		statistics.addKeyValuePair(StatisticsType.NUMBER_CO_RELATION_QUERIES,
+				mUnfoldingStatistics.getCoRelationQueries());
 		statistics.addKeyValuePair(StatisticsType.NUMBER_CUT_OFF_EVENTS, mUnfoldingStatistics.getCutOffEvents());
 		statistics.addKeyValuePair(StatisticsType.NUMBER_NON_CUT_OFF_EVENTS, mUnfoldingStatistics.getNonCutOffEvents());
 		if (mOperand instanceof IPetriNet) {
-			statistics.addKeyValuePair(
-					StatisticsType.NUMBER_UNREACHABLE_TRANSITIONS, mUnfoldingStatistics.unreachableTransitionsInOperand());
+			statistics.addKeyValuePair(StatisticsType.NUMBER_UNREACHABLE_TRANSITIONS,
+					mUnfoldingStatistics.unreachableTransitionsInOperand());
 		}
+		statistics.addKeyValuePair(StatisticsType.EXTENSION_CANDIDATES_TOTAL,
+				mUnfoldingStatistics.getNumberOfExtensionCandidates());
+		statistics.addKeyValuePair(StatisticsType.EXTENSION_CANDIDATES_USELESS,
+				mUnfoldingStatistics.getNumberOfUselessExtensionCandidates());
 
 		return statistics;
 	}

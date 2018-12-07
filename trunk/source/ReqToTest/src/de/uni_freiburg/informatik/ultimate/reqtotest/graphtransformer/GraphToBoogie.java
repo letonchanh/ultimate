@@ -28,6 +28,7 @@ import de.uni_freiburg.informatik.ultimate.boogie.ast.LoopInvariantSpecification
 import de.uni_freiburg.informatik.ultimate.boogie.ast.ModifiesSpecification;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.NamedAttribute;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.Procedure;
+import de.uni_freiburg.informatik.ultimate.boogie.ast.RealLiteral;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.Statement;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.Unit;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.VarList;
@@ -36,6 +37,7 @@ import de.uni_freiburg.informatik.ultimate.boogie.ast.VariableLHS;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.WhileStatement;
 import de.uni_freiburg.informatik.ultimate.boogie.type.BoogieType;
 import de.uni_freiburg.informatik.ultimate.core.model.models.IBoogieType;
+import de.uni_freiburg.informatik.ultimate.core.model.models.IElement;
 import de.uni_freiburg.informatik.ultimate.core.model.services.ILogger;
 import de.uni_freiburg.informatik.ultimate.core.model.services.IToolchainStorage;
 import de.uni_freiburg.informatik.ultimate.core.model.services.IUltimateServiceProvider;
@@ -53,7 +55,11 @@ import de.uni_freiburg.informatik.ultimate.util.datastructures.relation.HashRela
 public class GraphToBoogie {
 	
 	private static final Attribute[] EMPTY_ATTRIBUTES = new Attribute[0];
-	
+	public static final String GLOBAL_CLOCK_VAR = "reqtotest_delta";
+	public static final String LOCATION_PREFIX = "reqtotest_pc_";
+	public static final String LOCATION_PRIME = "'";
+	public static final String TEST_ORACLE_MARKER = "TEST_ORACLE_MARKER";
+		
 	private final ILogger mLogger;
 	private final ReqSymbolTable mSymbolTable;
 	
@@ -61,20 +67,16 @@ public class GraphToBoogie {
 	private final List<ReqGuardGraph> mRequirements;
 	private final Unit mUnit;
 	
-	
 	private final Map<ReqGuardGraph, String> mGraphToPc;
-	private final Map<ReqGuardGraph, String> mGraphToPrimePc;
+	private final Map<ReqGuardGraph, String> mGraphToPcPrime;
 	
 	private final Term2Expression mTerm2Expression;
 	private final Script mScript;
 	private final ManagedScript mManagedScript;
-	private final ThreeValuedAuxVarGen mThreeValuedAuxVarGen;
-	
-	public static final String TEST_ORACLE_MARKER = "TEST_ORACLE_MARKER";
-	 
+	private final AuxVarGen mThreeValuedAuxVarGen;
 	
 	public GraphToBoogie(final ILogger logger, final IUltimateServiceProvider services,
-			final IToolchainStorage storage,  ReqSymbolTable symbolTable, ThreeValuedAuxVarGen threeValuedAuxVarGen,
+			final IToolchainStorage storage,  ReqSymbolTable symbolTable, AuxVarGen threeValuedAuxVarGen,
 			List<ReqGuardGraph> requirements, Script scipt, ManagedScript managedScipt) {
 		mLogger = logger;
 		mSymbolTable = symbolTable;
@@ -82,7 +84,7 @@ public class GraphToBoogie {
 		mRequirements = requirements;
 		
 		mGraphToPc = new LinkedHashMap<>();
-		mGraphToPrimePc = new LinkedHashMap<>();
+		mGraphToPcPrime = new LinkedHashMap<>();
 		
 		generatePcVars();
 
@@ -104,6 +106,15 @@ public class GraphToBoogie {
 		mUnit = new Unit(mDummyLocation, decls.toArray(new Declaration[decls.size()]));
 		
 		
+	}
+	
+	private void generatePcVars() {
+		int i = 0;
+		for(ReqGuardGraph req: mRequirements) {
+			mGraphToPc.put(req, GraphToBoogie.LOCATION_PREFIX + Integer.toString(i));
+			mGraphToPcPrime.put(req, GraphToBoogie.LOCATION_PREFIX + Integer.toString(i) + LOCATION_PRIME);
+			i++;
+		}
 	}
 	
 	public Unit getAst() {
@@ -155,24 +166,26 @@ public class GraphToBoogie {
 		return statements.toArray(new Statement[statements.size()]);
 	}
 	
-	private List<Statement> graphToBoogie(ReqGuardGraph req) {
+	private List<Statement> graphToBoogie(ReqGuardGraph reqId) {
 
 		final HashSet<ReqGuardGraph> visited = new HashSet<>();
 		final Queue<ReqGuardGraph> queue = new LinkedList<>();
-		queue.add(req);
+		queue.add(reqId);
 		Statement[] elsePart = new Statement[0];
 		while(queue.size() > 0) {
-			ReqGuardGraph pivoth = queue.poll();
-			visited.add(pivoth);
+			ReqGuardGraph sourceLocation = queue.poll();
+			visited.add(sourceLocation);
 			Statement[] innerIf = new Statement[] {new AssumeStatement(mDummyLocation, new BooleanLiteral(mDummyLocation, false))};
-			for(ReqGuardGraph successor: pivoth.getOutgoingNodes()) {
-				if(!visited.contains(successor) && !queue.contains(successor)) {
-					queue.add(successor);
+			for(ReqGuardGraph successorLocation: sourceLocation.getOutgoingNodes()) {
+				if(!visited.contains(successorLocation) && !queue.contains(successorLocation)) {
+					queue.add(successorLocation);
 				}
-				TimedLabel label = pivoth.getOutgoingEdgeLabel(successor);
-				innerIf = generateInnerIf(innerIf, req, successor, label);
+				TimedLabel label = sourceLocation.getOutgoingEdgeLabel(successorLocation);
+				//generate the inner if (... "then transition to __successorLocation__ if __label__ holds ")
+				innerIf = generateInnerIf(innerIf, reqId, sourceLocation, successorLocation, label);
 			}
-			elsePart = new Statement[] {(generateOuterIf(req, pivoth, innerIf, elsePart))};
+			//generate the outer if ("if in location __sourceLocation__ ...")
+			elsePart = new Statement[] {(generateOuterIf(reqId, sourceLocation, innerIf, elsePart))};
 		}
 		//TODO this is ugly
 		final List<Statement> statements = new ArrayList<>();
@@ -185,29 +198,25 @@ public class GraphToBoogie {
 		final Expression rhs = new IdentifierExpression(mDummyLocation, mGraphToPc.get(req));
 		final BinaryExpression condition = new BinaryExpression(mDummyLocation, BinaryExpression.Operator.COMPEQ, lhs, rhs);
 		return new IfStatement(mDummyLocation, condition, body, elsePart);
-	}
+	} 
 	
-	private Statement[] generateInnerIf(Statement[] innerIf, ReqGuardGraph graph, ReqGuardGraph successor, TimedLabel label) {
+	private Statement[] generateInnerIf(Statement[] innerIf, ReqGuardGraph reqId, ReqGuardGraph source, ReqGuardGraph successor, TimedLabel label) {
 		Statement[] body;
-		Statement setPcNextState = createVarIntAssignment(mGraphToPrimePc.get(graph), successor.getLabel());
+		Statement setPcNextState = generateVarIntAssignment(mGraphToPcPrime.get(reqId), successor.getLabel());	
 		if (label.getReset() != null) {
-			Statement resetClock = createVarIntAssignment(label.getReset().getName(),0);
+			Statement resetClock = generateVarRealAssignment(label.getReset().getName(), 0.0f);
 			body = new Statement[] {resetClock, setPcNextState};
 		} else {
 			body = new Statement[] {setPcNextState};
 		}
-			IfStatement ifStatement = new IfStatement(mDummyLocation, 
-					mTerm2Expression.translate(label.getGuard()), body, innerIf);	
-		return new Statement[] {ifStatement};
-	}
-	
-	private void generatePcVars() {
-		int i = 0;
-		for(ReqGuardGraph req: mRequirements) {
-			mGraphToPc.put(req, "reqtotest_pc"+ Integer.toString(i));
-			mGraphToPrimePc.put(req, "reqtotest_pc"+ Integer.toString(i) + "'");
-			i++;
+		final Expression guard = mTerm2Expression.translate(label.getGuard());
+		IfStatement ifStatement = new IfStatement(mDummyLocation, guard, body, innerIf);
+		if (successor.getLabel() > 0) {
+			//Annotate all non-powerset non-initial transitions 
+			ReqGraphAnnotation annotation = new ReqGraphAnnotation(reqId, label.getGuard(), source);
+			annotation.annotate(ifStatement);
 		}
+		return new Statement[] {ifStatement};
 	}
 	
 	private List<Declaration> generateEncodingVarDeclaration() {
@@ -216,12 +225,12 @@ public class GraphToBoogie {
 		String[] idents = values.toArray(new String[values.size()]);
 		VarList[] varList = new VarList[] { new VarList(mDummyLocation, idents,  BoogieType.TYPE_INT.toASTType(mDummyLocation)) };
 		statements.add(new VariableDeclaration(mDummyLocation, EMPTY_ATTRIBUTES, varList));
-		Collection<String> valuesPrimed = mGraphToPrimePc.values();
+		Collection<String> valuesPrimed = mGraphToPcPrime.values();
 		String[] identsPrimed = valuesPrimed.toArray(new String[valuesPrimed.size()]);
 		VarList[] varListPrimed = new VarList[] { new VarList(mDummyLocation, identsPrimed,  BoogieType.TYPE_INT.toASTType(mDummyLocation)) };
 		statements.add(new VariableDeclaration(mDummyLocation, EMPTY_ATTRIBUTES, varListPrimed));
 		//add encoding variable "delta"
-		varList = new VarList[] { new VarList(mDummyLocation, new String[] {"delta"},  BoogieType.TYPE_INT.toASTType(mDummyLocation)) };
+		varList = new VarList[] { new VarList(mDummyLocation, new String[] {GLOBAL_CLOCK_VAR},  BoogieType.TYPE_REAL.toASTType(mDummyLocation)) };
 		statements.add(new VariableDeclaration(mDummyLocation, EMPTY_ATTRIBUTES, varList));
 		return statements;
 	}
@@ -229,7 +238,7 @@ public class GraphToBoogie {
 	private List<Statement> generateNextLoopStateAssignment(){
 		final List<Statement> statements = new ArrayList<>();
 		for(ReqGuardGraph req: mRequirements) {
-			statements.add(generateVarVarAssignment(mGraphToPc.get(req), mGraphToPrimePc.get(req)));
+			statements.add(generateVarVarAssignment(mGraphToPc.get(req), mGraphToPcPrime.get(req)));
 		}
 		return statements;
 	}
@@ -240,9 +249,15 @@ public class GraphToBoogie {
 		return new AssignmentStatement(mDummyLocation,lhs,rhs );
 	}
 	
-	private Statement createVarIntAssignment(String asignee, int value) {
+	private Statement generateVarIntAssignment(String asignee, int value) {
 		final LeftHandSide[] lhs = new LeftHandSide[] {new VariableLHS(mDummyLocation, asignee)};
 		final Expression[] rhs = new Expression[] {new IntegerLiteral(mDummyLocation, Integer.toString(value))};
+		return new AssignmentStatement(mDummyLocation,lhs,rhs );
+	}
+	
+	private Statement generateVarRealAssignment(String asignee, float value) {
+		final LeftHandSide[] lhs = new LeftHandSide[] {new VariableLHS(mDummyLocation, asignee)};
+		final Expression[] rhs = new Expression[] {new RealLiteral(mDummyLocation, Float.toString(value))};
 		return new AssignmentStatement(mDummyLocation,lhs,rhs );
 	}
 	
@@ -271,9 +286,9 @@ public class GraphToBoogie {
 		modifiedVarsList.addAll(mSymbolTable.getConstVars());
 		modifiedVarsList.addAll(mSymbolTable.getAuxVars());
 		modifiedVarsList.addAll(mSymbolTable.getClockVars());
-		modifiedVarsList.addAll(mGraphToPrimePc.values());
+		modifiedVarsList.addAll(mGraphToPcPrime.values());
 		modifiedVarsList.addAll(mGraphToPc.values());
-		modifiedVarsList.add("delta");
+		modifiedVarsList.add(GraphToBoogie.GLOBAL_CLOCK_VAR);
 		
 		final VariableLHS[] modifiedVars = new VariableLHS[modifiedVarsList.size()];
 		for (int i = 0; i < modifiedVars.length; i++) {
@@ -285,7 +300,7 @@ public class GraphToBoogie {
 	private List<Statement> generatePcInitialization() {
 		final List<Statement> statements = new ArrayList<>();
 		for(ReqGuardGraph req: mRequirements) {
-			statements.add(createVarIntAssignment(mGraphToPc.get(req), req.getLabel()));
+			statements.add(generateVarIntAssignment(mGraphToPc.get(req), req.getLabel()));
 		}
 		return statements;
 	}
@@ -293,9 +308,9 @@ public class GraphToBoogie {
 	private List<Statement> generateClockInitialization() {
 		final List<Statement> statements = new ArrayList<>();
 		for(String clock: mSymbolTable.getClockVars()) {
-			statements.add(createVarIntAssignment(clock, 0));
+			statements.add(generateVarRealAssignment(clock, 0.0f));
 		}
-		statements.add(createVarIntAssignment("delta", 0));
+		statements.add(generateVarRealAssignment(GraphToBoogie.GLOBAL_CLOCK_VAR, 0.0f));
 		return statements;
 	}
 	
@@ -316,16 +331,19 @@ public class GraphToBoogie {
 	
 	private List<Statement> generateTestOracleAssertion(){
 		final List<Statement> oracles = new ArrayList<>();	
-		final List<Term> guards = mThreeValuedAuxVarGen.getOracleGuards();
-		
-		// dummyassertion to catch states at this point in the program
+				
+		// dummy assertion to mark the program location
 		NamedAttribute attribute = new NamedAttribute(mDummyLocation, TEST_ORACLE_MARKER , new Expression[0] );
-		Statement assume = new AssertStatement(mDummyLocation, new NamedAttribute[] {attribute}, new BooleanLiteral(mDummyLocation, true));	
-		oracles.add(assume);
+		Statement assertion = new AssertStatement(mDummyLocation, new NamedAttribute[] {attribute}, new BooleanLiteral(mDummyLocation, true));	
+		oracles.add(assertion);
 		
-		for(Term guard: guards) {
-			assume = new AssertStatement(mDummyLocation, new NamedAttribute[0], mTerm2Expression.translate(guard));
-			oracles.add(assume);
+		final Map<ReqGuardGraph, Term> guards = mThreeValuedAuxVarGen.getOracleAssertions();
+		for(ReqGuardGraph reqId: guards.keySet()) {
+			Term guard = guards.get(reqId);
+			assertion = new AssertStatement(mDummyLocation, mTerm2Expression.translate(guard));
+			//ReqGraphAnnotation annotation = new ReqGraphAnnotation(reqId, guard);
+			//annotation.annotate(assertion);
+			oracles.add(assertion);
 		}
 		return oracles;
 	}
@@ -333,16 +351,16 @@ public class GraphToBoogie {
 	private List<Statement> generateClockUpdates(){
 		List<Statement> stmts = new ArrayList<>();
 		stmts.add(new HavocStatement(mDummyLocation, 
-				new VariableLHS[] {new VariableLHS(mDummyLocation, "delta")} ));
+				new VariableLHS[] {new VariableLHS(mDummyLocation, GraphToBoogie.GLOBAL_CLOCK_VAR)} ));
 		stmts.add(new AssumeStatement(mDummyLocation,
 				new BinaryExpression(mDummyLocation, BinaryExpression.Operator.COMPGT,
-						new IdentifierExpression(mDummyLocation, "delta"), new IntegerLiteral(mDummyLocation, "0"))
+						new IdentifierExpression(mDummyLocation, GraphToBoogie.GLOBAL_CLOCK_VAR), new RealLiteral(mDummyLocation, "1.0"))
 				));
 		for(String clockVar: mSymbolTable.getClockVars()) {
 			stmts.add(new AssignmentStatement(mDummyLocation, new VariableLHS[] {new VariableLHS(mDummyLocation, clockVar)},
 					new Expression[] {new BinaryExpression(mDummyLocation, BinaryExpression.Operator.ARITHPLUS,
 							new IdentifierExpression(mDummyLocation, clockVar),
-							new IdentifierExpression(mDummyLocation, "delta")
+							new IdentifierExpression(mDummyLocation, GraphToBoogie.GLOBAL_CLOCK_VAR)
 					)}));
 			}
 		return stmts;

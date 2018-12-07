@@ -54,6 +54,9 @@ import de.uni_freiburg.informatik.ultimate.core.model.models.ILocation;
 import de.uni_freiburg.informatik.ultimate.core.model.preferences.IPreferenceProvider;
 import de.uni_freiburg.informatik.ultimate.plugins.generator.cacsl2boogietranslator.preferences.CACSLPreferenceInitializer;
 import de.uni_freiburg.informatik.ultimate.plugins.generator.cacsl2boogietranslator.preferences.CACSLPreferenceInitializer.Signedness;
+import de.uni_freiburg.informatik.ultimate.util.datastructures.BitvectorConstant;
+import de.uni_freiburg.informatik.ultimate.util.datastructures.BitvectorConstant.BitvectorConstantOperationResult;
+import de.uni_freiburg.informatik.ultimate.util.datastructures.BitvectorConstant.SupportedBitvectorOperations;
 
 /**
  * Provides the information if we want to use fixed sizes for types. If yes an object of this class also provides the
@@ -256,7 +259,7 @@ public class TypeSizes {
 		case FLOAT: {
 			final int sizeof = getSize(cPrimitive);
 			if (sizeof == 4) {
-				result = new FloatingPointSize(24, 8);
+				result = new FloatingPointSize(sizeof, 24, 8);
 			} else {
 				throw new UnsupportedOperationException("unsupported sizeof " + cPrimitive + "==" + sizeof);
 			}
@@ -265,7 +268,7 @@ public class TypeSizes {
 		case DOUBLE: {
 			final int sizeof = getSize(cPrimitive);
 			if (sizeof == 8) {
-				result = new FloatingPointSize(53, 11);
+				result = new FloatingPointSize(sizeof, 53, 11);
 			} else {
 				throw new UnsupportedOperationException("unsupported sizeof " + cPrimitive + "==" + sizeof);
 			}
@@ -273,8 +276,9 @@ public class TypeSizes {
 			break;
 		case LONGDOUBLE: {
 			final int sizeof = getSize(cPrimitive);
+			// 12 because of 80bit long doubles on linux x86
 			if (sizeof == 12 || sizeof == 16) {
-				result = new FloatingPointSize(113, 15);
+				result = new FloatingPointSize(sizeof, 113, 15);
 			} else {
 				throw new UnsupportedOperationException("unsupported sizeof " + cPrimitive + "==" + sizeof);
 			}
@@ -474,42 +478,75 @@ public class TypeSizes {
 				}
 			} else if (expr instanceof FunctionApplication) {
 				final FunctionApplication funApp = (FunctionApplication) expr;
-				final BigInteger leftValue = extractIntegerValue(funApp.getArguments()[0], cType, hook);
-				final BigInteger rightValue = extractIntegerValue(funApp.getArguments()[1], cType, hook);
+				final Expression[] args = funApp.getArguments();
 
-				if (leftValue == null || rightValue == null) {
+				final SupportedBitvectorOperations sbo =
+						getBitvectorSmtFunctionNameFromCFunctionName(funApp.getIdentifier());
+				if (sbo == null) {
 					return null;
 				}
-
-				if (funApp.getIdentifier().contains("bvadd")) {
-					return leftValue.add(rightValue);
-				} else if (funApp.getIdentifier().contains("bvmul")) {
-					return leftValue.multiply(rightValue);
-				} else if (funApp.getIdentifier().contains("bvsub")) {
-					return leftValue.subtract(rightValue);
-				} else if (funApp.getIdentifier().contains("bvsdiv")) {
-					return leftValue.divide(rightValue);
-				} else if (funApp.getIdentifier().contains("bvsrem")) {
-					return leftValue.remainder(rightValue);
+				if (sbo.isBoolean()) {
+					throw new UnsupportedOperationException("Unexpected boolean bitvector op");
 				}
-				return null;
+
+				switch (sbo) {
+				case zero_extend:
+				case extract:
+					// TODO: Add support for these
+					return null;
+				default:
+
+					final int index = getBitvectorIndexFromCFunctionName(funApp.getIdentifier());
+					if (index == -1) {
+						return null;
+					}
+					final BitvectorConstant[] operands = new BitvectorConstant[sbo.getArity()];
+					for (int i = 0; i < args.length; ++i) {
+						final BigInteger arg = extractIntegerValue(args[i], cType, hook);
+						if (arg == null) {
+							return null;
+						}
+						operands[i] = new BitvectorConstant(arg, BigInteger.valueOf(index));
+					}
+					final BitvectorConstantOperationResult result = BitvectorConstant.apply(sbo, operands);
+					assert !result.isBoolean();
+					return result.getBvResult().toSignedInt();
+				}
 			}
 			return null;
 		}
 		return null;
 	}
 
+	private static SupportedBitvectorOperations getBitvectorSmtFunctionNameFromCFunctionName(final String name) {
+		final String funName = name.substring(1).replaceAll("\\d+", "");
+		try {
+			return BitvectorConstant.SupportedBitvectorOperations.valueOf(funName);
+		} catch (final IllegalArgumentException iae) {
+			return null;
+		}
+	}
+
+	private static int getBitvectorIndexFromCFunctionName(final String name) {
+		try {
+			return Integer.parseInt(name.substring(1).replaceAll("[^0-9]", ""));
+		} catch (final NumberFormatException ex) {
+			return -1;
+		}
+	}
+
 	/**
 	 * The size of a real floating point type is defined by a significant and an exponent.
 	 */
-	public class FloatingPointSize {
-		final int mSignificant;
-		final int mExponent;
+	public static final class FloatingPointSize {
+		private final int mSignificant;
+		private final int mExponent;
+		private final int mByteSize;
 
-		public FloatingPointSize(final int significant, final int exponent) {
-			super();
+		public FloatingPointSize(final int byteSize, final int significant, final int exponent) {
 			mSignificant = significant;
 			mExponent = exponent;
+			mByteSize = byteSize;
 		}
 
 		public int getSignificant() {
@@ -518,6 +555,17 @@ public class TypeSizes {
 
 		public int getExponent() {
 			return mExponent;
+		}
+
+		public int getByteSize() {
+			return mByteSize;
+		}
+
+		/**
+		 * @return an int array containing the exponent and the significant
+		 */
+		public int[] getIndices() {
+			return new int[] { getExponent(), getSignificant() };
 		}
 	}
 

@@ -72,15 +72,17 @@ import de.uni_freiburg.informatik.ultimate.boogie.symboltable.BoogieSymbolTable;
 import de.uni_freiburg.informatik.ultimate.core.model.services.ILogger;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.boogie.BoogieNonOldVar;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.boogie.IBoogieSymbolTableVariableProvider;
+import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.structure.IcfgEdge;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.variables.IProgramNonOldVar;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.variables.IProgramVar;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.variables.IProgramVarOrConst;
+import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.algorithm.AbsIntBenchmark;
+import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.evaluator.Evaluator;
 import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.evaluator.EvaluatorUtils;
 import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.evaluator.ExpressionEvaluator;
 import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.evaluator.IEvaluationResult;
-import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.evaluator.IEvaluator;
 import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.evaluator.IEvaluatorFactory;
-import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.evaluator.INAryEvaluator;
+import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.evaluator.NAryEvaluator;
 import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.nonrelational.interval.IntervalDomainState;
 import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.domain.util.typeutils.TypeUtils;
 import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretationv2.preferences.AbsIntPrefInitializer;
@@ -110,26 +112,56 @@ public abstract class NonrelationalStatementProcessor<STATE extends Nonrelationa
 	private final Map<Expression, ExpressionEvaluator<V, STATE>> mEvaluatorCache;
 
 	private boolean mOldScope;
+	private AbsIntBenchmark<IcfgEdge> mAbsIntBenchmark;
 
 	protected NonrelationalStatementProcessor(final ILogger logger, final BoogieSymbolTable boogieSymbolTable,
-			final IBoogieSymbolTableVariableProvider bpl2SmtTable, final int maxParallelStates) {
+			final IBoogieSymbolTableVariableProvider bpl2SmtTable, final int maxParallelStates,
+			final int maxRecursionDepth) {
 		mBoogie2SmtSymbolTable = bpl2SmtTable;
 		mSymbolTable = boogieSymbolTable;
 		mOldScope = false;
 		mLogger = logger;
 		mLhsVariable = null;
 		mNormalizedExpressionCache = new HashMap<>();
-		mEvaluatorFactory = createEvaluatorFactory(maxParallelStates);
+		mEvaluatorFactory = createEvaluatorFactory(maxParallelStates, maxRecursionDepth);
 		mEvaluatorCache = new HashMap<>();
 		assert mEvaluatorFactory != null;
 	}
 
-	public List<STATE> process(final STATE oldState, final Statement statement) {
-		return process(oldState, statement, Collections.emptyMap());
+	/**
+	 * Computes the abstract post states for a given statement and prestate.
+	 *
+	 * @param oldState
+	 *            The prestate to use.
+	 * @param statement
+	 *            The statement to compute the abstract post states for.
+	 * @param absIntBenchmark
+	 *            An instance of {@link AbsIntBenchmark} which is used by the processor to report benchmarks. This
+	 *            parameter may be null, if no benchmarks should be collected.
+	 * @return
+	 */
+	public List<STATE> process(final STATE oldState, final Statement statement,
+			final AbsIntBenchmark<IcfgEdge> absIntBenchmark) {
+		return process(oldState, statement, Collections.emptyMap(), absIntBenchmark);
 	}
 
+	/**
+	 * Computes the abstract post states for a given statement and prestate.
+	 *
+	 * @param oldState
+	 *            The prestate to use.
+	 * @param statement
+	 *            The statement to compute the abstract post states for.
+	 * @param tmpVars
+	 *            A map of left hand side variables to program variables that have been temporarily added to the states.
+	 *            This map is needed for the computation of the abstract post states when dealing with transformulas.
+	 * @param absIntBenchmark
+	 *            An instance of {@link AbsIntBenchmark} which is used by the processor to report benchmarks. This
+	 *            parameter may be null, if no benchmarks should be collected.
+	 * @return
+	 */
 	public List<STATE> process(final STATE oldState, final Statement statement,
-			final Map<LeftHandSide, IProgramVarOrConst> tmpVars) {
+			final Map<LeftHandSide, IProgramVarOrConst> tmpVars, final AbsIntBenchmark<IcfgEdge> absIntBenchmark) {
 		assert oldState != null;
 		assert statement != null;
 		assert tmpVars != null;
@@ -138,6 +170,8 @@ public abstract class NonrelationalStatementProcessor<STATE extends Nonrelationa
 		mOldState = oldState;
 		mTemporaryVars = tmpVars;
 		mLhsVariable = null;
+
+		mAbsIntBenchmark = absIntBenchmark;
 
 		processStatement(statement);
 		final List<STATE> rtr = mReturnState;
@@ -202,7 +236,18 @@ public abstract class NonrelationalStatementProcessor<STATE extends Nonrelationa
 		return newExpr;
 	}
 
-	protected abstract IEvaluatorFactory<V, STATE> createEvaluatorFactory(final int maxParallelStates);
+	/**
+	 * Creates an evaluator factory for evaluators.
+	 *
+	 * @param maxParallelStates
+	 *            The maximum number of allowed parallel states before merging.
+	 * @param maxRecursionDepth
+	 *            The maximum number of recursion allowed during evaluation. The value -1 indicates that <b>no</b> limit
+	 *            should be used.
+	 * @return
+	 */
+	protected abstract IEvaluatorFactory<V, STATE> createEvaluatorFactory(final int maxParallelStates,
+			final int maxRecursionDepth);
 
 	/**
 	 * Override this method to add evaluators for this (already preprocessed) expression.
@@ -307,7 +352,7 @@ public abstract class NonrelationalStatementProcessor<STATE extends Nonrelationa
 			mEvaluatorCache.put(rhs, mExpressionEvaluator);
 		}
 
-		final List<IEvaluationResult<V>> results = mExpressionEvaluator.getRootEvaluator().evaluate(oldstate);
+		final Collection<IEvaluationResult<V>> results = mExpressionEvaluator.getRootEvaluator().evaluate(oldstate, 0);
 
 		if (results.isEmpty()) {
 			throw new UnsupportedOperationException(
@@ -324,6 +369,14 @@ public abstract class NonrelationalStatementProcessor<STATE extends Nonrelationa
 
 			newStates.add(newState);
 		}
+
+		if (mAbsIntBenchmark != null) {
+			mAbsIntBenchmark.recordEvaluationRecursionDepth(
+					mExpressionEvaluator.getRootEvaluator().getEvaluationRecursionDepth());
+			mAbsIntBenchmark.recordInverseEvaluationRecursionDepth(
+					mExpressionEvaluator.getRootEvaluator().getInverseEvaluationRecursionDepth());
+		}
+
 		return newStates;
 	}
 
@@ -360,7 +413,7 @@ public abstract class NonrelationalStatementProcessor<STATE extends Nonrelationa
 			mEvaluatorCache.put(formula, mExpressionEvaluator);
 		}
 
-		final List<IEvaluationResult<V>> result = mExpressionEvaluator.getRootEvaluator().evaluate(mOldState);
+		final Collection<IEvaluationResult<V>> result = mExpressionEvaluator.getRootEvaluator().evaluate(mOldState, 0);
 
 		for (final IEvaluationResult<V> res : result) {
 			if (res.getValue().isBottom() || res.getBooleanValue() == BooleanValue.BOTTOM
@@ -372,10 +425,17 @@ public abstract class NonrelationalStatementProcessor<STATE extends Nonrelationa
 				// Assume statements must evaluate to true in all cases. Only the true part is important for succeeding
 				// states. Otherwise, the return state will be bottom.
 				final Collection<STATE> resultStates = mExpressionEvaluator.getRootEvaluator().inverseEvaluate(
-						new NonrelationalEvaluationResult<>(res.getValue(), BooleanValue.TRUE), mOldState);
+						new NonrelationalEvaluationResult<>(res.getValue(), BooleanValue.TRUE), mOldState, 0);
 				mReturnState.addAll(
 						resultStates.stream().map(state -> state.intersect(mOldState)).collect(Collectors.toList()));
 			}
+		}
+
+		if (mAbsIntBenchmark != null) {
+			mAbsIntBenchmark.recordEvaluationRecursionDepth(
+					mExpressionEvaluator.getRootEvaluator().getEvaluationRecursionDepth());
+			mAbsIntBenchmark.recordInverseEvaluationRecursionDepth(
+					mExpressionEvaluator.getRootEvaluator().getInverseEvaluationRecursionDepth());
 		}
 	}
 
@@ -405,21 +465,21 @@ public abstract class NonrelationalStatementProcessor<STATE extends Nonrelationa
 
 	@Override
 	protected void visit(final IntegerLiteral expr) {
-		final IEvaluator<V, STATE> evaluator =
+		final Evaluator<V, STATE> evaluator =
 				mEvaluatorFactory.createSingletonValueExpressionEvaluator(expr.getValue(), BigInteger.class);
 		mExpressionEvaluator.addEvaluator(evaluator);
 	}
 
 	@Override
 	protected void visit(final RealLiteral expr) {
-		final IEvaluator<V, STATE> evaluator =
+		final Evaluator<V, STATE> evaluator =
 				mEvaluatorFactory.createSingletonValueExpressionEvaluator(expr.getValue(), BigDecimal.class);
 		mExpressionEvaluator.addEvaluator(evaluator);
 	}
 
 	@Override
 	protected void visit(final BinaryExpression expr) {
-		final INAryEvaluator<V, STATE> evaluator =
+		final NAryEvaluator<V, STATE> evaluator =
 				mEvaluatorFactory.createNAryExpressionEvaluator(2, EvaluatorUtils.getEvaluatorType(expr.getType()));
 		evaluator.setOperator(expr.getOperator());
 		mExpressionEvaluator.addEvaluator(evaluator);
@@ -427,7 +487,7 @@ public abstract class NonrelationalStatementProcessor<STATE extends Nonrelationa
 
 	@Override
 	protected void visit(final FunctionApplication expr) {
-		final IEvaluator<V, STATE> evaluator;
+		final Evaluator<V, STATE> evaluator;
 		final List<Declaration> decls = mSymbolTable.getFunctionOrProcedureDeclaration(expr.getIdentifier());
 
 		// If we don't have a specification for the function, we return top.
@@ -456,7 +516,7 @@ public abstract class NonrelationalStatementProcessor<STATE extends Nonrelationa
 
 	@Override
 	protected void visit(final IdentifierExpression expr) {
-		final IEvaluator<V, STATE> evaluator =
+		final Evaluator<V, STATE> evaluator =
 				mEvaluatorFactory.createSingletonVariableExpressionEvaluator(getBoogieVar(expr));
 		mExpressionEvaluator.addEvaluator(evaluator);
 		super.visit(expr);
@@ -464,7 +524,7 @@ public abstract class NonrelationalStatementProcessor<STATE extends Nonrelationa
 
 	@Override
 	protected void visit(final UnaryExpression expr) {
-		final INAryEvaluator<V, STATE> evaluator =
+		final NAryEvaluator<V, STATE> evaluator =
 				mEvaluatorFactory.createNAryExpressionEvaluator(1, EvaluatorUtils.getEvaluatorType(expr.getType()));
 		evaluator.setOperator(expr.getOperator());
 		mExpressionEvaluator.addEvaluator(evaluator);
@@ -473,7 +533,7 @@ public abstract class NonrelationalStatementProcessor<STATE extends Nonrelationa
 
 	@Override
 	protected void visit(final BooleanLiteral expr) {
-		final IEvaluator<V, STATE> evaluator = mEvaluatorFactory
+		final Evaluator<V, STATE> evaluator = mEvaluatorFactory
 				.createSingletonLogicalValueExpressionEvaluator(BooleanValue.getBooleanValue(expr.getValue()));
 		mExpressionEvaluator.addEvaluator(evaluator);
 	}
@@ -490,7 +550,7 @@ public abstract class NonrelationalStatementProcessor<STATE extends Nonrelationa
 
 	@Override
 	protected void visit(final IfThenElseExpression expr) {
-		final IEvaluator<V, STATE> evaluator = mEvaluatorFactory.createConditionalEvaluator();
+		final Evaluator<V, STATE> evaluator = mEvaluatorFactory.createConditionalEvaluator();
 		mExpressionEvaluator.addEvaluator(evaluator);
 
 		// Create a new expression for the negative case

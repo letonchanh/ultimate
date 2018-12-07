@@ -89,11 +89,43 @@ public class UltimateNormalFormTest {
 
 	@Test
 	public void unf02() {
-		mScript.reset();
+		final Sort realSort = SmtSortUtils.getRealSort(mScript);
 
+		mScript.declareFun("X", new Sort[0], realSort);
+		final Term var = mScript.term("X");
+		final Term value = mScript.decimal("23.0");
+		final Map<Term, Term> substitutionMapping = Collections.singletonMap(var, value);
+		final Term input = TermParseUtils.parseTerm(mScript, "(- X)");
+
+		final Term result = new SubstitutionWithLocalSimplification(mMgdScript, substitutionMapping).transform(input);
+
+		final Term expectedResult = Rational.valueOf(-23, 1).toTerm(realSort);
+		Assert.isTrue(result.equals(expectedResult));
+	}
+
+	@Test
+	public void unf03() {
+		final Sort realSort = SmtSortUtils.getRealSort(mScript);
+
+		mScript.declareFun("a", new Sort[0], realSort);
+		mScript.declareFun("X", new Sort[0], realSort);
+		final Term var = mScript.term("X");
+		final Term value = TermParseUtils.parseTerm(mScript, "(+ a (- 3.0))");
+		final Map<Term, Term> substitutionMapping = Collections.singletonMap(var, value);
+		final Term input = TermParseUtils.parseTerm(mScript, "(- X)");
+
+		final Term result = new SubstitutionWithLocalSimplification(mMgdScript, substitutionMapping).transform(input);
+
+		final Term expectedResult = TermParseUtils.parseTerm(mScript, "(+ (- a) 3.0)");
+		mLogger.info("expected result: " + expectedResult);
+		mLogger.info("actual   result: " + result);
+		Assert.isTrue(result.equals(expectedResult));
+	}
+
+	@Test
+	public void unf04() {
+		mScript.reset();
 		mScript.setLogic(Logics.ALL);
-		mTrue = mScript.term("true");
-		mFalse = mScript.term("false");
 
 		final Sort bv32Sort = SmtSortUtils.getBitvectorSort(mScript, new BigInteger[]{ BigInteger.valueOf(32) });
 

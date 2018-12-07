@@ -28,6 +28,7 @@
 package de.uni_freiburg.informatik.ultimate.automata.petrinet.unfolding;
 
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Set;
@@ -37,6 +38,8 @@ import de.uni_freiburg.informatik.ultimate.automata.AutomataOperationCanceledExc
 import de.uni_freiburg.informatik.ultimate.automata.IAutomaton;
 import de.uni_freiburg.informatik.ultimate.automata.LibraryIdentifiers;
 import de.uni_freiburg.informatik.ultimate.automata.petrinet.IPetriNetSuccessorProvider;
+import de.uni_freiburg.informatik.ultimate.automata.petrinet.Marking;
+import de.uni_freiburg.informatik.ultimate.automata.petrinet.PetriNetNot1SafeException;
 import de.uni_freiburg.informatik.ultimate.automata.petrinet.visualization.BranchingProcessToUltimateModel;
 import de.uni_freiburg.informatik.ultimate.core.model.models.IElement;
 import de.uni_freiburg.informatik.ultimate.core.model.services.ILogger;
@@ -75,11 +78,17 @@ public final class BranchingProcess<LETTER, PLACE> implements IAutomaton<LETTER,
 	private final IPetriNetSuccessorProvider<LETTER, PLACE> mNet;
 
 	private final IOrder<LETTER, PLACE> mOrder;
-	
+
 	private int mConditionSerialnumberCounter = 0;
 
+	/**
+	 * Relation between the hashcode of {@link Event} {@link Marking}s and Events.
+	 * Hashcode is the key, allows us to check find cut-off events more quickly.
+	 */
+	private final HashRelation<Integer, Event<LETTER, PLACE>> mMarkingEventRelation = new HashRelation<>();
+
 	public BranchingProcess(final AutomataLibraryServices services, final IPetriNetSuccessorProvider<LETTER, PLACE> net,
-			final IOrder<LETTER, PLACE> order) {
+			final IOrder<LETTER, PLACE> order) throws PetriNetNot1SafeException {
 		mServices = services;
 		mLogger = mServices.getLoggingService().getLogger(LibraryIdentifiers.PLUGIN_ID);
 		mNet = net;
@@ -101,8 +110,8 @@ public final class BranchingProcess<LETTER, PLACE> implements IAutomaton<LETTER,
 	public Event<LETTER, PLACE> getDummyRoot() {
 		return mDummyRoot;
 	}
-	
-	public Condition<LETTER, PLACE> constructCondition(Event<LETTER, PLACE> predecessor, PLACE place) {
+
+	public Condition<LETTER, PLACE> constructCondition(final Event<LETTER, PLACE> predecessor, final PLACE place) {
 		return new Condition<LETTER, PLACE>(predecessor, place, mConditionSerialnumberCounter++);
 	}
 
@@ -115,10 +124,13 @@ public final class BranchingProcess<LETTER, PLACE> implements IAutomaton<LETTER,
 	 * @param event
 	 *            event
 	 * @return true iff some successor of e corresponds to an accepting place
+	 * @throws PetriNetNot1SafeException
 	 */
-	boolean addEvent(final Event<LETTER, PLACE> event) {
+	boolean addEvent(final Event<LETTER, PLACE> event) throws PetriNetNot1SafeException {
 		mEvents.add(event);
+		mMarkingEventRelation.addPair(event.getMark().hashCode(), event);
 		for (final Condition<LETTER, PLACE> c : event.getPredecessorConditions()) {
+			assert !c.getPredecessorEvent().isCutoffEvent() : "Cut-off events must not have successors.";
 			c.addSuccesssor(event);
 		}
 		boolean someSuccessorIsAccepting = false;
@@ -130,21 +142,24 @@ public final class BranchingProcess<LETTER, PLACE> implements IAutomaton<LETTER,
 			}
 		}
 		mCoRelation.update(event);
-		assert checkOneSafety(event) : "Net is not one safe!";
+		final PLACE counterexampleToOneSafety = isOneSafe(event);
+		if (counterexampleToOneSafety != null) {
+			throw new PetriNetNot1SafeException(getClass(), Collections.singleton(counterexampleToOneSafety));
+		}
 		return someSuccessorIsAccepting;
 	}
 
-	private boolean checkOneSafety(final Event<LETTER, PLACE> event) {
+	private PLACE isOneSafe(final Event<LETTER, PLACE> event) {
 		for (final Condition<LETTER, PLACE> condition : event.getSuccessorConditions()) {
 			final Set<Condition<LETTER, PLACE>> existing = mPlace2Conds.getImage(condition.getPlace());
 			for (final Condition<LETTER, PLACE> c : existing) {
 				if (c != condition && mCoRelation.isInCoRelation(c, condition)) {
 					mLogger.debug(c + " in coRelation with " + condition + " but they belong to the same place.");
-					return false;
+					return c.getPlace();
 				}
 			}
 		}
-		return true;
+		return null;
 	}
 
 	/**
@@ -162,8 +177,7 @@ public final class BranchingProcess<LETTER, PLACE> implements IAutomaton<LETTER,
 	 */
 	public boolean isCutoffEvent(final Event<LETTER, PLACE> event, final Comparator<Event<LETTER, PLACE>> order,
 			final boolean sameTransitionCutOff) {
-		// TODO possibly optimize
-		for (final Event<LETTER, PLACE> ev : getEvents()) {
+		for (final Event<LETTER, PLACE> ev : mMarkingEventRelation.getImage(event.getMark().hashCode())) {
 			if (event.checkCutOffSetCompanion(ev, order, sameTransitionCutOff)) {
 				return true;
 			}

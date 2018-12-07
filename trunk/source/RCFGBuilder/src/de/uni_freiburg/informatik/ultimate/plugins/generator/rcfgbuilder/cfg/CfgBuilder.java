@@ -1,7 +1,7 @@
 /*
  * Copyright (C) 2013-2015 Daniel Dietsch (dietsch@informatik.uni-freiburg.de)
  * Copyright (C) 2010-2015 Matthias Heizmann (heizmann@informatik.uni-freiburg.de)
- * Copyright (C) 2018 Lars Nitzke (lars.nitzke@outlook.com)
+ * Copyright (C) 2018 Lars Nitzke (lars.nitzke@mailfence.com)
  * Copyright (C) 2015 University of Freiburg
  *
  * This file is part of the ULTIMATE RCFGBuilder plug-in.
@@ -42,9 +42,11 @@ import java.util.Map.Entry;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import de.uni_freiburg.informatik.ultimate.boogie.ExpressionFactory;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.AssertStatement;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.AssignmentStatement;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.AssumeStatement;
+import de.uni_freiburg.informatik.ultimate.boogie.ast.AtomicStatement;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.Body;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.BoogieASTNode;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.BooleanLiteral;
@@ -71,7 +73,6 @@ import de.uni_freiburg.informatik.ultimate.core.lib.models.annotation.LoopEntryA
 import de.uni_freiburg.informatik.ultimate.core.lib.models.annotation.LoopEntryAnnotation.LoopEntryType;
 import de.uni_freiburg.informatik.ultimate.core.lib.models.annotation.LoopExitAnnotation;
 import de.uni_freiburg.informatik.ultimate.core.lib.models.annotation.Overapprox;
-import de.uni_freiburg.informatik.ultimate.core.lib.translation.TranslatorConcatenation;
 import de.uni_freiburg.informatik.ultimate.core.model.models.IElement;
 import de.uni_freiburg.informatik.ultimate.core.model.models.ILocation;
 import de.uni_freiburg.informatik.ultimate.core.model.models.ModelUtils;
@@ -85,9 +86,7 @@ import de.uni_freiburg.informatik.ultimate.logic.Term;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.boogie.Boogie2SMT;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.boogie.BoogieDeclarations;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.boogie.Statements2TransFormula.TranslationResult;
-import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.BasicIcfg;
-import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.CfgSmtToolkit;
-import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.ProcedureMultiplier;
+import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.ConcurrencyInformation;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.ThreadInstance;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.structure.IIcfg;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.structure.IIcfgElement;
@@ -108,9 +107,7 @@ import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.structure.debug
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.structure.debugidentifiers.ProcedureExitDebugIdentifier;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.structure.debugidentifiers.ProcedureFinalDebugIdentifier;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.structure.debugidentifiers.StringDebugIdentifier;
-import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.transformations.BlockEncodingBacktranslator;
-import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.transformations.IcfgDuplicator;
-import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.variables.IProgramNonOldVar;
+import de.uni_freiburg.informatik.ultimate.modelcheckerutils.cfg.transitions.TransFormulaBuilder;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.SmtUtils.SimplificationTechnique;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.SmtUtils.XnfConversionTechnique;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.smt.SolverBuilder;
@@ -124,7 +121,6 @@ import de.uni_freiburg.informatik.ultimate.plugins.generator.rcfgbuilder.cfg.Sta
 import de.uni_freiburg.informatik.ultimate.plugins.generator.rcfgbuilder.preferences.RcfgPreferenceInitializer;
 import de.uni_freiburg.informatik.ultimate.plugins.generator.rcfgbuilder.preferences.RcfgPreferenceInitializer.CodeBlockSize;
 import de.uni_freiburg.informatik.ultimate.plugins.generator.rcfgbuilder.util.TransFormulaAdder;
-import de.uni_freiburg.informatik.ultimate.util.datastructures.relation.HashRelation;
 
 /**
  * This class generates a recursive control flow graph (in the style of POPL'10 - Heizmann, Hoenicke, Podelski - Nested
@@ -151,17 +147,16 @@ public class CfgBuilder {
 	 */
 	private final BoogieIcfgContainer mIcfg;
 
-	private final Boogie2SMT mBoogie2smt;
+	private final Boogie2SMT mBoogie2Smt;
 	private final BoogieDeclarations mBoogieDeclarations;
-	TransFormulaAdder mTransFormulaAdder;
+	private TransFormulaAdder mTransFormulaAdder;
 
-	Collection<Summary> mImplementationSummarys = new ArrayList<>();
+	private final Collection<Summary> mImplementationSummarys = new ArrayList<>();
 
-	List<ForkThreadCurrent> mForkCurrentThreads = new ArrayList<>();
-	List<JoinThreadCurrent> mJoinCurrentThreads = new ArrayList<>();
+	private final Map<IIcfgForkTransitionThreadCurrent<IcfgLocation>, ThreadInstance> mForks = new HashMap<>();
+	private final List<IIcfgJoinTransitionThreadCurrent<IcfgLocation>> mJoins = new ArrayList<>();
 
 	private final RCFGBacktranslator mRcfgBacktranslator;
-	private ITranslator mResultingBacktranslator;
 
 	private final CodeBlockSize mCodeBlockSize;
 
@@ -171,9 +166,12 @@ public class CfgBuilder {
 
 	private final CodeBlockFactory mCbf;
 
+	private int mRemovedAssumeTrueStatements = 0;
+
 	private final SimplificationTechnique mSimplificationTechnique = SimplificationTechnique.SIMPLIFY_DDA;
 	private final XnfConversionTechnique mXnfConversionTechnique =
 			XnfConversionTechnique.BOTTOM_UP_WITH_LOCAL_SIMPLIFICATION;
+
 
 	public CfgBuilder(final Unit unit, final IUltimateServiceProvider services, final IToolchainStorage storage)
 			throws IOException {
@@ -204,80 +202,16 @@ public class CfgBuilder {
 			mCodeBlockSize = userDefineCodeBlockSize;
 		}
 
-		mBoogie2smt = new Boogie2SMT(mgdScript, mBoogieDeclarations, bitvectorInsteadInt, mServices,
+		mBoogie2Smt = new Boogie2SMT(mgdScript, mBoogieDeclarations, bitvectorInsteadInt, mServices,
 				simplePartialSkolemization);
 		final RCFGBacktranslator backtranslator = new RCFGBacktranslator(mLogger);
-		backtranslator.setTerm2Expression(mBoogie2smt.getTerm2Expression());
+		backtranslator.setTerm2Expression(mBoogie2Smt.getTerm2Expression());
 		mRcfgBacktranslator = backtranslator;
 
-		mIcfg = new BoogieIcfgContainer(mServices, mBoogieDeclarations, mBoogie2smt, null);
+		final ConcurrencyInformation ci = new ConcurrencyInformation(mForks, mJoins);
+		mIcfg = new BoogieIcfgContainer(mServices, mBoogieDeclarations, mBoogie2Smt, ci);
 		mCbf = mIcfg.getCodeBlockFactory();
 		mCbf.storeFactory(storage);
-	}
-
-	public Boogie2SMT getBoogie2smt() {
-		return mBoogie2smt;
-	}
-
-	/**
-	 * Returns list of all {@link ForkStatement}s from all declarations. Expects that the input has been "unstructured",
-	 * i.e., all {@link WhileStatement}s and {@link IfStatement}s have been removed.
-	 */
-	private static List<ForkStatement> extractForkStatements(final BoogieDeclarations boogieDeclarations) {
-		final List<ForkStatement> result = new ArrayList<>();
-		for (final Entry<String, Procedure> entry : boogieDeclarations.getProcImplementation().entrySet()) {
-			final Procedure proc = entry.getValue();
-			final Body body = proc.getBody();
-			for (final Statement st : body.getBlock()) {
-				if ((st instanceof ForkStatement)) {
-					result.add((ForkStatement) st);
-				} else if ((st instanceof AssignmentStatement) || (st instanceof AssumeStatement)
-						|| (st instanceof HavocStatement) || (st instanceof GotoStatement) || (st instanceof Label)
-						|| (st instanceof JoinStatement) || (st instanceof CallStatement)
-						|| (st instanceof ReturnStatement) || (st instanceof AssertStatement)) {
-					// do nothing
-				} else {
-					throw new UnsupportedOperationException(
-							"Did not expect statement of type " + st.getClass().getSimpleName());
-				}
-			}
-
-		}
-		return result;
-	}
-
-	/**
-	 * @param services
-	 * @param storage
-	 * @param filename
-	 */
-	private Script constructAndInitializeSolver(final IUltimateServiceProvider services,
-			final IToolchainStorage storage, final String filename) {
-
-		final IPreferenceProvider prefs = mServices.getPreferenceProvider(Activator.PLUGIN_ID);
-
-		final SolverMode solverMode = prefs.getEnum(RcfgPreferenceInitializer.LABEL_SOLVER, SolverMode.class);
-
-		final boolean fakeNonIncrementalScript =
-				prefs.getBoolean(RcfgPreferenceInitializer.LABEL_FAKE_NON_INCREMENTAL_SCRIPT);
-
-		final boolean dumpSmtScriptToFile = prefs.getBoolean(RcfgPreferenceInitializer.LABEL_DUMP_TO_FILE);
-		final String pathOfDumpedScript = prefs.getString(RcfgPreferenceInitializer.LABEL_DUMP_PATH);
-
-		final String commandExternalSolver = prefs.getString(RcfgPreferenceInitializer.LABEL_EXT_SOLVER_COMMAND);
-
-		final boolean dumpUsatCoreTrackBenchmark =
-				prefs.getBoolean(RcfgPreferenceInitializer.LABEL_DUMP_UNSAT_CORE_BENCHMARK);
-
-		final boolean dumpMainTrackBenchmark =
-				prefs.getBoolean(RcfgPreferenceInitializer.LABEL_DUMP_MAIN_TRACK_BENCHMARK);
-
-		final String logicForExternalSolver = prefs.getString(RcfgPreferenceInitializer.LABEL_EXT_SOLVER_LOGIC);
-		final SolverSettings solverSettings = SolverBuilder.constructSolverSettings(filename, solverMode,
-				fakeNonIncrementalScript, commandExternalSolver, dumpSmtScriptToFile, pathOfDumpedScript);
-
-		return SolverBuilder.buildAndInitializeSolver(services, storage, solverMode, solverSettings,
-				dumpUsatCoreTrackBenchmark, dumpMainTrackBenchmark, logicForExternalSolver, "CfgBuilderScript");
 	}
 
 	/**
@@ -289,7 +223,7 @@ public class CfgBuilder {
 	 */
 	public IIcfg<?> createIcfg(final Unit unit) {
 
-		mTransFormulaAdder = new TransFormulaAdder(mBoogie2smt, mServices);
+		mTransFormulaAdder = new TransFormulaAdder(mBoogie2Smt, mServices);
 
 		// Build entry, final and exit node for all procedures that have an
 		// implementation
@@ -342,59 +276,78 @@ public class CfgBuilder {
 					+ ULTIMATE_START + ")");
 			icfg.getInitialNodes().addAll(initialNodes);
 		}
-
-		// Add all transitions to the forked procedure entry locations.
-		IIcfg<? extends IcfgLocation> result = icfg;
-		ModelUtils.copyAnnotations(unit, result);
-		if (!mForkCurrentThreads.isEmpty()) {
-			final BlockEncodingBacktranslator backtranslator =
-					new BlockEncodingBacktranslator(IcfgEdge.class, Term.class, mLogger);
-			final IcfgDuplicator duplicator =
-					new IcfgDuplicator(mLogger, mServices, mBoogie2smt.getManagedScript(), backtranslator);
-			result = duplicator.copy(result);
-			final Map<IIcfgTransition<IcfgLocation>, IIcfgTransition<IcfgLocation>> old2newEdgeMapping =
-					duplicator.getOld2NewEdgeMapping();
-			final List<IIcfgForkTransitionThreadCurrent<IcfgLocation>> forkCurrentThreads =
-					mForkCurrentThreads.stream().map(old2newEdgeMapping::get)
-							.map(x -> (IIcfgForkTransitionThreadCurrent<IcfgLocation>) x).collect(Collectors.toList());
-			final List<IIcfgJoinTransitionThreadCurrent<IcfgLocation>> joinCurrentThreads =
-					mJoinCurrentThreads.stream().map(old2newEdgeMapping::get)
-							.map(x -> (IIcfgJoinTransitionThreadCurrent<IcfgLocation>) x).collect(Collectors.toList());
-			final ThreadInstanceAdder adder = new ThreadInstanceAdder(mServices);
-			final Map<IIcfgForkTransitionThreadCurrent<IcfgLocation>, ThreadInstance> threadInstanceMap =
-					adder.constructTreadInstances(result, forkCurrentThreads);
-			final CfgSmtToolkit cfgSmtToolkit =
-					adder.constructNewToolkit(result.getCfgSmtToolkit(), threadInstanceMap);
-			((BasicIcfg<IcfgLocation>) result).setCfgSmtToolkit(cfgSmtToolkit);
-			final HashRelation<String, String> copyDirectives =
-					ProcedureMultiplier.generateCopyDirectives(threadInstanceMap.values());
-			new ProcedureMultiplier(mServices, (BasicIcfg<IcfgLocation>) result, copyDirectives, backtranslator, threadInstanceMap, forkCurrentThreads, joinCurrentThreads);
-			adder.addInUseErrorLocations((BasicIcfg<IcfgLocation>) result, threadInstanceMap.values());
-
-			result = adder.connectThreadInstances((IIcfg<IcfgLocation>) result, forkCurrentThreads, joinCurrentThreads,
-					threadInstanceMap, backtranslator);
-
-			final Set<Term> auxiliaryThreadVariables = collectAxiliaryThreadVariables(threadInstanceMap.values());
-			backtranslator.setVariableBlacklist(auxiliaryThreadVariables);
-
-			mResultingBacktranslator = new TranslatorConcatenation<>(backtranslator, mRcfgBacktranslator);
-		} else {
-			mResultingBacktranslator = mRcfgBacktranslator;
-		}
-
-		return result;
+		ModelUtils.copyAnnotations(unit, icfg);
+		mLogger.info("Removed " + mRemovedAssumeTrueStatements + " assue(true) statements.");
+		return icfg;
 	}
 
-	private Set<Term> collectAxiliaryThreadVariables(final Collection<ThreadInstance> values) {
-		final Set<Term> result = new HashSet<>();
-		for (final ThreadInstance ti : values) {
-			result.add(ti.getInUseVar().getTerm());
-			for (final IProgramNonOldVar idVar : ti.getIdVars()) {
-				result.add(idVar.getTerm());
+	public Boogie2SMT getBoogie2Smt() {
+		return mBoogie2Smt;
+	}
+
+	/**
+	 * Returns list of all {@link ForkStatement}s from all declarations. Expects that the input has been "unstructured",
+	 * i.e., all {@link WhileStatement}s and {@link IfStatement}s have been removed.
+	 */
+	private static List<ForkStatement> extractForkStatements(final BoogieDeclarations boogieDeclarations) {
+		final List<ForkStatement> result = new ArrayList<>();
+		for (final Entry<String, Procedure> entry : boogieDeclarations.getProcImplementation().entrySet()) {
+			final Procedure proc = entry.getValue();
+			final Body body = proc.getBody();
+			for (final Statement st : body.getBlock()) {
+				if ((st instanceof ForkStatement)) {
+					result.add((ForkStatement) st);
+				} else if ((st instanceof AssignmentStatement) || (st instanceof AssumeStatement)
+						|| (st instanceof HavocStatement) || (st instanceof GotoStatement) || (st instanceof Label)
+						|| (st instanceof JoinStatement) || (st instanceof CallStatement)
+						|| (st instanceof ReturnStatement) || (st instanceof AssertStatement)
+						|| (st instanceof AtomicStatement)) {
+					// do nothing
+				} else {
+					throw new UnsupportedOperationException(
+							"Did not expect statement of type " + st.getClass().getSimpleName());
+				}
 			}
+
 		}
 		return result;
 	}
+
+	/**
+	 * @param services
+	 * @param storage
+	 * @param filename
+	 */
+	private Script constructAndInitializeSolver(final IUltimateServiceProvider services,
+			final IToolchainStorage storage, final String filename) {
+
+		final IPreferenceProvider prefs = mServices.getPreferenceProvider(Activator.PLUGIN_ID);
+
+		final SolverMode solverMode = prefs.getEnum(RcfgPreferenceInitializer.LABEL_SOLVER, SolverMode.class);
+
+		final boolean fakeNonIncrementalScript =
+				prefs.getBoolean(RcfgPreferenceInitializer.LABEL_FAKE_NON_INCREMENTAL_SCRIPT);
+
+		final boolean dumpSmtScriptToFile = prefs.getBoolean(RcfgPreferenceInitializer.LABEL_DUMP_TO_FILE);
+		final String pathOfDumpedScript = prefs.getString(RcfgPreferenceInitializer.LABEL_DUMP_PATH);
+
+		final String commandExternalSolver = prefs.getString(RcfgPreferenceInitializer.LABEL_EXT_SOLVER_COMMAND);
+
+		final boolean dumpUsatCoreTrackBenchmark =
+				prefs.getBoolean(RcfgPreferenceInitializer.LABEL_DUMP_UNSAT_CORE_BENCHMARK);
+
+		final boolean dumpMainTrackBenchmark =
+				prefs.getBoolean(RcfgPreferenceInitializer.LABEL_DUMP_MAIN_TRACK_BENCHMARK);
+
+		final String logicForExternalSolver = prefs.getString(RcfgPreferenceInitializer.LABEL_EXT_SOLVER_LOGIC);
+		final SolverSettings solverSettings = SolverBuilder.constructSolverSettings(filename, solverMode,
+				fakeNonIncrementalScript, commandExternalSolver, dumpSmtScriptToFile, pathOfDumpedScript);
+
+		return SolverBuilder.buildAndInitializeSolver(services, storage, solverMode, solverSettings,
+				dumpUsatCoreTrackBenchmark, dumpMainTrackBenchmark, logicForExternalSolver, "CfgBuilderScript");
+	}
+
+
 
 	private static Expression getNegation(final Expression expr) {
 		if (expr == null) {
@@ -432,12 +385,12 @@ public class CfgBuilder {
 		final Map<String, ILocation> overapproximations = new HashMap<>();
 		overapproximations.putAll(arguments2InParams.getOverapproximations());
 		overapproximations.putAll(outParams2CallerVars.getOverapproximations());
-		if (!overapproximations.isEmpty()) {
-			new Overapprox(overapproximations).annotate(edge);
-		}
 
 		final Call call = mCbf.constructCall(callerNode, calleeEntryLoc, st);
 		call.setTransitionFormula(arguments2InParams.getTransFormula());
+		if (!overapproximations.isEmpty()) {
+			new Overapprox(overapproximations).annotate(call);
+		}
 
 		final BoogieIcfgLocation returnNode = (BoogieIcfgLocation) edge.getTarget();
 		final BoogieIcfgLocation calleeExitLoc = mIcfg.getProcedureExitNodes().get(callee);
@@ -445,13 +398,6 @@ public class CfgBuilder {
 		returnAnnot.setTransitionFormula(outParams2CallerVars.getTransFormula());
 	}
 
-	public Collection<ForkThreadCurrent> getForkCurrentThreads() {
-		return mForkCurrentThreads;
-	}
-
-	public Collection<JoinThreadCurrent> getJoinCurrentThreads() {
-		return mJoinCurrentThreads;
-	}
 
 	/**
 	 * construct error location BoogieASTNode in procedure procName add constructed location to mprocLocNodes and
@@ -498,6 +444,28 @@ public class CfgBuilder {
 		procLocNodes.put(errorLocLabel, errorLocNode);
 		errorNodes.add(errorLocNode);
 		return errorLocNode;
+	}
+
+	public ITranslator<IIcfgTransition<IcfgLocation>, BoogieASTNode, Term, Expression, IcfgLocation, String> getBacktranslator() {
+		return mRcfgBacktranslator;
+	}
+
+	private static boolean isAssumeTrueStatement(final Statement st) {
+		if (st instanceof AssumeStatement) {
+			final AssumeStatement as = (AssumeStatement) st;
+			if (as.getFormula() instanceof BooleanLiteral) {
+				final BooleanLiteral bl = (BooleanLiteral) as.getFormula();
+				if (bl.getValue()) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	private static boolean isOverapproximation(final Statement st) {
+		final Overapprox oa = Overapprox.getAnnotation(st);
+		return (oa != null);
 	}
 
 	/**
@@ -564,7 +532,17 @@ public class CfgBuilder {
 		 */
 		Set<CodeBlock> mEdges;
 
+		/**
+		 * TODO: document this variable (Daniel Dietsch?)
+		 */
 		Map<Integer, Integer> mNameCache;
+
+		/**
+		 * If this is switched to true all statements have to be added to one
+		 * single {@link StatementSequence} until the value is again switched
+		 * to false.
+		 */
+		public boolean mAtomicMode = false;
 
 		/**
 		 * Builds the control flow graph of a single procedure according to a given implementation.
@@ -610,6 +588,11 @@ public class CfgBuilder {
 							"constructing CFG for procedure with " + statements.length + "statements");
 				}
 
+				if (isAssumeTrueStatement(st) && !isOverapproximation(st)) {
+					mRemovedAssumeTrueStatements++;
+					continue;
+				}
+
 				final ILocation loc = st.getLocation();
 				assert loc != null : "location of the following statement is null " + st;
 
@@ -625,7 +608,7 @@ public class CfgBuilder {
 					if (mCurrent instanceof CodeBlock) {
 						assert mLastStmt instanceof AssumeStatement || mLastStmt instanceof AssignmentStatement
 								|| mLastStmt instanceof HavocStatement || mLastStmt instanceof AssertStatement
-								|| mLastStmt instanceof CallStatement : "If st"
+								|| mLastStmt instanceof CallStatement || mLastStmt instanceof AtomicStatement : "If st"
 										+ " is a Label and the last constructed node"
 										+ " was a TransEdge, then the last"
 										+ " Statement must not be a Label, Return or" + " Goto";
@@ -640,7 +623,7 @@ public class CfgBuilder {
 					if (mCurrent instanceof CodeBlock) {
 						assert mLastStmt instanceof AssumeStatement || mLastStmt instanceof AssignmentStatement
 								|| mLastStmt instanceof HavocStatement || mLastStmt instanceof AssertStatement
-								|| mLastStmt instanceof CallStatement : "If the"
+								|| mLastStmt instanceof CallStatement || mLastStmt instanceof AtomicStatement : "If the"
 										+ " last constructed node is a TransEdge, then"
 										+ " the last Statement must not be a Label,"
 										+ " Return or Goto. (i.e. this is not the first" + " Statemnt of the block)";
@@ -652,7 +635,7 @@ public class CfgBuilder {
 					if (mCurrent instanceof CodeBlock) {
 						assert mLastStmt instanceof AssumeStatement || mLastStmt instanceof AssignmentStatement
 								|| mLastStmt instanceof HavocStatement || mLastStmt instanceof AssertStatement
-								|| mLastStmt instanceof CallStatement : "If the"
+								|| mLastStmt instanceof CallStatement || mLastStmt instanceof AtomicStatement : "If the"
 										+ " last constructed node is a TransEdge, then"
 										+ " the last Statement must not be a Label,"
 										+ " Return or Goto. (i.e. this is not the first" + " Statement of the block)";
@@ -674,7 +657,7 @@ public class CfgBuilder {
 					if (mCurrent instanceof CodeBlock) {
 						assert mLastStmt instanceof AssumeStatement || mLastStmt instanceof AssignmentStatement
 								|| mLastStmt instanceof HavocStatement || mLastStmt instanceof AssertStatement
-								|| mLastStmt instanceof CallStatement : "If mcurrent is a TransEdge, then lastSt"
+								|| mLastStmt instanceof CallStatement || mLastStmt instanceof AtomicStatement : "If mcurrent is a TransEdge, then lastSt"
 										+ " must not be a Label, Return or Goto."
 										+ " (i.e. this is not the first Statemnt" + " of the block)";
 					}
@@ -693,6 +676,8 @@ public class CfgBuilder {
 					processForkStatement((ForkStatement) st);
 				} else if (st instanceof JoinStatement) {
 					processJoinStatement((JoinStatement) st);
+				} else if (st instanceof AtomicStatement) {
+					processAtomicStatement((AtomicStatement) st);
 				} else {
 					throw new UnsupportedOperationException("At the moment"
 							+ " only Labels, Assert, Assume, Assignment, Havoc" + " and Goto statements are supported");
@@ -736,6 +721,7 @@ public class CfgBuilder {
 			}
 			// mBoogie2smt.removeLocals(proc);
 		}
+
 
 		/**
 		 * @return List of {@code EnsuresSpecification}s that contains only one {@code EnsuresSpecification} which is
@@ -793,6 +779,11 @@ public class CfgBuilder {
 				gotoEdge.setSource(null);
 				gotoEdge.setTarget(null);
 				child.removeIncoming(gotoEdge);
+				final ILocation loc = mother.getBoogieASTNode().getLocation();
+				final StatementSequence gotoSelfloopSubstitute = mCbf.constructStatementSequence(mother, child,
+						new AssumeStatement(loc, ExpressionFactory.createBooleanLiteral(loc, true)));
+				gotoSelfloopSubstitute.setTransitionFormula(
+						TransFormulaBuilder.getTrivialTransFormula(mBoogie2Smt.getManagedScript()));
 				mLogger.debug("GotoEdge was selfloop");
 				return true;
 			}
@@ -1020,27 +1011,19 @@ public class CfgBuilder {
 				return;
 			}
 			if (mCurrent instanceof BoogieIcfgLocation) {
-				final StatementSequence codeBlock =
-						mCbf.constructStatementSequence((BoogieIcfgLocation) mCurrent, null, st, origin);
-				ModelUtils.copyAnnotations(st, codeBlock);
-				mEdges.add(codeBlock);
-				mCurrent = codeBlock;
+				startNewStatementSequenceAndAddStatement(st, origin);
 			} else if (mCurrent instanceof CodeBlock) {
 				if (mCodeBlockSize == CodeBlockSize.SequenceOfStatements
-						|| mCodeBlockSize == CodeBlockSize.LoopFreeBlock) {
-					final StatementSequence stSeq = (StatementSequence) mCurrent;
-					stSeq.addStatement(st);
-					ModelUtils.copyAnnotations(st, stSeq);
+						|| mCodeBlockSize == CodeBlockSize.LoopFreeBlock || mAtomicMode) {
+					addStatementToStatementSequenceThatIsCurrentlyBuilt(st);
 				} else {
 					final DebugIdentifier locName = constructLocDebugIdentifier(st);
 					final BoogieIcfgLocation locNode =
 							new BoogieIcfgLocation(locName, mCurrentProcedureName, false, st);
 					((CodeBlock) mCurrent).connectTarget(locNode);
+					mCurrent = locNode;
 					mProcLocNodes.put(locName, locNode);
-					final StatementSequence codeBlock = mCbf.constructStatementSequence(locNode, null, st, origin);
-					ModelUtils.copyAnnotations(st, codeBlock);
-					mEdges.add(codeBlock);
-					mCurrent = codeBlock;
+					startNewStatementSequenceAndAddStatement(st, origin);
 				}
 			} else {
 				// mcurrent must either be LocNode or TransEdge
@@ -1048,6 +1031,50 @@ public class CfgBuilder {
 			}
 
 		}
+
+
+		private void startNewStatementSequenceAndAddStatement(final Statement st, final Origin origin) {
+			assert isIntraproceduralBranchFreeStatement(st) : "cannot add statement to code block " + st;
+			final StatementSequence codeBlock = mCbf.constructStatementSequence((BoogieIcfgLocation) mCurrent, null, st, origin);
+			ModelUtils.copyAnnotations(st, codeBlock);
+			mEdges.add(codeBlock);
+			mCurrent = codeBlock;
+		}
+
+		private void addStatementToStatementSequenceThatIsCurrentlyBuilt(final Statement st) {
+			assert isIntraproceduralBranchFreeStatement(st) : "cannot add statement to code block " + st;
+			final StatementSequence stSeq = (StatementSequence) mCurrent;
+			stSeq.addStatement(st);
+			ModelUtils.copyAnnotations(st, stSeq);
+		}
+
+		private boolean isIntraproceduralBranchFreeStatement(final Statement st) {
+			if (st instanceof AssumeStatement) {
+				return true;
+			} else if (st instanceof AssignmentStatement) {
+				return true;
+			} else if (st instanceof HavocStatement) {
+				return true;
+			} else if (st instanceof CallStatement) {
+				final CallStatement call = (CallStatement) st;
+				if (mBoogieDeclarations.getProcImplementation().containsKey(call.getMethodName())) {
+					// procedure has implementation
+					return false;
+				} else {
+					if (mBoogieDeclarations.getRequiresNonFree().get(call.getMethodName()) == null
+							|| mBoogieDeclarations.getRequiresNonFree().get(call.getMethodName()).isEmpty()) {
+						// procedure does not have non-free requires
+						// and hence does not require an additional branch into an error location
+						return true;
+					} else {
+						return false;
+					}
+				}
+			} else {
+				return false;
+			}
+		}
+
 
 		private void processAssertStatement(final AssertStatement st) {
 			if (mDeadcode) {
@@ -1134,6 +1161,52 @@ public class CfgBuilder {
 			if (mDeadcode) {
 				return;
 			}
+			if (st.getMethodName().equals("__VERIFIER_atomic_begin")) {
+				if (mAtomicMode) {
+					throw new AssertionError("already in atomic mode");
+				} else {
+					mAtomicMode = true;
+				}
+				return;
+			}
+			if (st.getMethodName().equals("__VERIFIER_atomic_end")) {
+				if (!mAtomicMode) {
+					throw new AssertionError("already ended atomic mode");
+				} else {
+					mAtomicMode = false;
+				}
+				return;
+			}
+			final String callee = st.getMethodName();
+			final List<RequiresSpecification> requiresNonFree = mBoogieDeclarations.getRequiresNonFree().get(callee);
+			// Check first for a special case.
+			// If the called procedure neither has an implementation nor a non-free requires
+			// specification the call is considered as a summary and we may add it to
+			// a statement sequence. (Note that this will not work if there is a
+			// non-free requires because in this case the control-flow has to
+			// branch to an error location.)
+			final boolean procedureHasImplementation = mBoogieDeclarations.getProcImplementation().containsKey(callee);
+			if (mAtomicMode && procedureHasImplementation) {
+				throw new UnsupportedOperationException(
+						"In an atomic block calls to procedures that have an implementation are not allowed.");
+			}
+			final boolean nonFreeRequiresIsEmpty = (requiresNonFree == null || requiresNonFree.isEmpty());
+			if (mAtomicMode && !nonFreeRequiresIsEmpty) {
+				throw new UnsupportedOperationException(
+						"In an atomic block calls to procedures that have a non-empty set of non-free requires clauses are not (yet) allowed.");
+			}
+			if ((mCodeBlockSize == CodeBlockSize.SequenceOfStatements || mCodeBlockSize == CodeBlockSize.LoopFreeBlock
+					|| mAtomicMode) && !procedureHasImplementation && nonFreeRequiresIsEmpty) {
+				if (mCurrent instanceof BoogieIcfgLocation) {
+					startNewStatementSequenceAndAddStatement(st, Origin.IMPLEMENTATION);
+				} else if (mCurrent instanceof CodeBlock) {
+					addStatementToStatementSequenceThatIsCurrentlyBuilt(st);
+				} else {
+					throw new AssertionError("mCurrent must be CodeBlock or BoogieIcfgLocation");
+				}
+				return;
+			}
+
 			BoogieIcfgLocation locNode;
 			if (mCurrent instanceof CodeBlock) {
 				final DebugIdentifier locName = constructLocDebugIdentifier(st);
@@ -1150,7 +1223,6 @@ public class CfgBuilder {
 			final BoogieIcfgLocation returnNode = new BoogieIcfgLocation(locName, mCurrentProcedureName, false, st);
 			mProcLocNodes.put(locName, returnNode);
 			// add summary edge
-			final String callee = st.getMethodName();
 			Summary summaryEdge;
 			if (mBoogieDeclarations.getProcImplementation().containsKey(callee)) {
 				summaryEdge = mCbf.constructSummary(locNode, returnNode, st, true);
@@ -1171,7 +1243,6 @@ public class CfgBuilder {
 			//
 
 			// in fork throw unsuportedOperationException
-			final List<RequiresSpecification> requiresNonFree = mBoogieDeclarations.getRequiresNonFree().get(callee);
 			if (requiresNonFree != null && !requiresNonFree.isEmpty()) {
 				for (final RequiresSpecification spec : requiresNonFree) {
 					// use implementation if available and specification
@@ -1267,7 +1338,7 @@ public class CfgBuilder {
 				forkCurrentThreadEdge = mCbf.constructForkCurrentThread(locNode, forkCurrentNode, st, true);
 				final IIcfgElement cb = forkCurrentThreadEdge;
 				ModelUtils.copyAnnotations(st, cb);
-				mForkCurrentThreads.add(forkCurrentThreadEdge);
+				mForks.put(forkCurrentThreadEdge, null);
 			} else {
 				forkCurrentThreadEdge = mCbf.constructForkCurrentThread(locNode, forkCurrentNode, st, false);
 				final IIcfgElement cb = forkCurrentThreadEdge;
@@ -1308,10 +1379,51 @@ public class CfgBuilder {
 					mCbf.constructJoinCurrentThread(locNode, joinCurrentNode, st);
 			final IIcfgElement cb = joinCurrentThreadEdge;
 			ModelUtils.copyAnnotations(st, cb);
-			mJoinCurrentThreads.add(joinCurrentThreadEdge);
+			mJoins.add(joinCurrentThreadEdge);
 
 			mEdges.add(joinCurrentThreadEdge);
 			mCurrent = joinCurrentNode;
+		}
+
+		private void processAtomicStatement(final AtomicStatement atomicStatement) {
+			mAtomicMode = true;
+			for (int i = 0; i<atomicStatement.getBody().length; i++) {
+				final Statement st = atomicStatement.getBody()[i];
+				if (st instanceof AssignmentStatement || (st instanceof AssumeStatement) || (st instanceof HavocStatement)) {
+					processAssuAssiHavoStatement(st, Origin.IMPLEMENTATION);
+				} else if (st instanceof CallStatement) {
+					final CallStatement callStatement = (CallStatement) st;
+					final String callee = ((CallStatement) st).getMethodName();
+					final List<RequiresSpecification> requiresNonFree = mBoogieDeclarations.getRequiresNonFree().get(callee);
+					final boolean procedureHasImplementation = mBoogieDeclarations.getProcImplementation().containsKey(callee);
+					if (mAtomicMode && procedureHasImplementation) {
+						throw new UnsupportedOperationException(
+								"In an atomic block, calls to procedures that have an implementation are not allowed.");
+					}
+					final boolean nonFreeRequiresIsEmpty = (requiresNonFree == null || requiresNonFree.isEmpty());
+					if (mAtomicMode && !nonFreeRequiresIsEmpty) {
+						throw new UnsupportedOperationException(
+								"In an atomic block, calls to procedures that have a non-empty set of non-free requires clauses are not (yet) allowed.");
+					}
+					processCallStatement(callStatement);
+				} else if (st instanceof GotoStatement) {
+					final GotoStatement gotoStatement = (GotoStatement) st;
+					final Statement nextStatement = atomicStatement.getBody()[i+1];
+					if (gotoStatement.getLabels().length == 1 && (nextStatement instanceof Label)
+							&& ((Label) nextStatement).getName().equals(gotoStatement.getLabels()[0])) {
+						// do nothing, we can skip goto and label
+					} else {
+						throw new UnsupportedOperationException(
+								"In atomic statements, GotoStatements are (currently) only allowed if they jump to exactly one label and this label is the next statement after the GotoStatement");
+					}
+				} else if (st instanceof Label) {
+					// do nothing, drop label
+					mLogger.info("dropping label inside atomic statement: " + ((Label) st).getName());
+				} else {
+					throw new UnsupportedOperationException("Not supported in atomic block " + st.getClass().getSimpleName());
+				}
+			}
+			mAtomicMode = false;
 		}
 
 		/**
@@ -1501,9 +1613,5 @@ public class CfgBuilder {
 			}
 			return result;
 		}
-	}
-
-	public ITranslator getBacktranslator() {
-		return mResultingBacktranslator;
 	}
 }

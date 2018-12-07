@@ -8,6 +8,7 @@ import de.uni_freiburg.informatik.ultimate.boogie.ast.Expression;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.IdentifierExpression;
 import de.uni_freiburg.informatik.ultimate.logic.ApplicationTerm;
 import de.uni_freiburg.informatik.ultimate.logic.Script;
+import de.uni_freiburg.informatik.ultimate.logic.Sort;
 import de.uni_freiburg.informatik.ultimate.logic.Term;
 import de.uni_freiburg.informatik.ultimate.logic.TermVariable;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.absint.IAbstractState;
@@ -39,7 +40,6 @@ public class ArrayDomainExpressionProcessor<STATE extends IAbstractState<STATE>>
 		final List<Term> constraints = new ArrayList<>();
 		ArrayDomainState<STATE> tmpState = state;
 		final Script script = mToolkit.getScript();
-		// TODO: Replace array (in)equalities
 		for (final MultiDimensionalSelect select : MultiDimensionalSelect.extractSelectShallow(term, true)) {
 			final Term selectTerm = select.getSelectTerm();
 			Term currentTerm = select.getArray();
@@ -52,14 +52,18 @@ public class ArrayDomainExpressionProcessor<STATE extends IAbstractState<STATE>>
 				final int min = bounds.getFirst();
 				final int max = bounds.getSecond();
 				final IProgramVar auxVar =
-						mToolkit.createVariable("aux", mToolkit.getType(TypeUtils.getValueSort(currentTerm.getSort())));
-				if (auxVar.getSort().isArraySort()) {
-					final List<Term> disjuncts = new ArrayList<>();
+						mToolkit.createAuxVar(mToolkit.getType(TypeUtils.getValueSort(currentTerm.getSort())));
+				final Sort sort = auxVar.getSort();
+				if (sort.isArraySort()) {
+					final List<Segmentation> segmentations = new ArrayList<>();
 					for (int i = min; i < max; i++) {
-						disjuncts.add(SmtUtils.binaryEquality(script, auxVar.getTermVariable(),
-								segmentation.getValue(i).getTermVariable()));
+						segmentations.add(tmpState.getSegmentation(segmentation.getValue(i)));
 					}
-					tmpState = processAssumeTerm(tmpState.addAuxVar(auxVar), SmtUtils.and(script, disjuncts));
+					final Pair<Segmentation, ArrayDomainState<STATE>> pair =
+							tmpState.unionSegmentations(segmentations, sort);
+					final SegmentationMap newSegmentationMap = pair.getSecond().getSegmentationMap();
+					newSegmentationMap.put(auxVar, pair.getFirst());
+					tmpState = pair.getSecond().updateState(newSegmentationMap);
 				} else {
 					auxVars.add(auxVar);
 					final List<Term> disjuncts = new ArrayList<>();
@@ -80,9 +84,13 @@ public class ArrayDomainExpressionProcessor<STATE extends IAbstractState<STATE>>
 	}
 
 	public ArrayDomainState<STATE> processAssume(final ArrayDomainState<STATE> state, final Expression assumption) {
+		final Term term = mToolkit.getTerm(assumption);
+		if (SmtUtils.isArrayFree(term)) {
+			return state.updateState(mToolkit.handleAssumptionBySubdomain(state.getSubState(), term));
+		}
 		ArrayDomainState<STATE> returnState = state;
-		final Term cnf = SmtUtils.toCnf(mToolkit.getServices(), mToolkit.getManagedScript(),
-				mToolkit.getTerm(assumption), XnfConversionTechnique.BOTTOM_UP_WITH_LOCAL_SIMPLIFICATION);
+		final Term cnf = SmtUtils.toCnf(mToolkit.getServices(), mToolkit.getManagedScript(), term,
+				XnfConversionTechnique.BOTTOM_UP_WITH_LOCAL_SIMPLIFICATION);
 		for (final Term t : SmtUtils.getConjuncts(cnf)) {
 			if (returnState.isBottom()) {
 				break;
@@ -94,31 +102,45 @@ public class ArrayDomainExpressionProcessor<STATE extends IAbstractState<STATE>>
 
 	private ArrayDomainState<STATE> processAssumeTerm(final ArrayDomainState<STATE> state, final Term assumption) {
 		assert !SmtUtils.isFunctionApplication(assumption, "and");
+		final Script script = mToolkit.getScript();
 		if (SmtUtils.isFunctionApplication(assumption, "or")) {
 			ArrayDomainState<STATE> returnState = mToolkit.createBottomState();
+			final List<Term> arrayFreeDisjuncts = new ArrayList<>();
 			for (final Term t : ((ApplicationTerm) assumption).getParameters()) {
-				returnState = returnState.union(processAssumeTerm(state, t));
+				if (SmtUtils.isArrayFree(t)) {
+					arrayFreeDisjuncts.add(t);
+				} else {
+					final ArrayDomainState<STATE> postState = processAssumeTerm(state, t).simplify();
+					returnState = returnState.union(postState);
+				}
 			}
-			return returnState;
+			if (arrayFreeDisjuncts.isEmpty()) {
+				return returnState;
+			}
+			final ArrayDomainState<STATE> postState = state.updateState(
+					mToolkit.handleAssumptionBySubdomain(state.getSubState(), SmtUtils.or(script, arrayFreeDisjuncts)));
+			return returnState.union(postState);
 		}
-		final Script script = mToolkit.getScript();
 		// Handle array-equalities
 		if (SmtUtils.isFunctionApplication(assumption, "=")) {
 			final Term[] params = ((ApplicationTerm) assumption).getParameters();
 			assert params.length == 2;
-			if (params[0].getSort().isArraySort()) {
+			final Sort sort = params[0].getSort();
+			if (sort.isArraySort()) {
 				final Expression left = mToolkit.getExpression(params[0]);
 				final Expression right = mToolkit.getExpression(params[1]);
 				final SegmentationMap segmentationMap = state.getSegmentationMap();
+				SegmentationMap newSegmentationMap;
 				if (left instanceof IdentifierExpression && right instanceof IdentifierExpression) {
 					final IProgramVarOrConst leftVar = mToolkit.getBoogieVar((IdentifierExpression) left);
 					final IProgramVarOrConst rightVar = mToolkit.getBoogieVar((IdentifierExpression) right);
 					final Segmentation leftSegmentation = segmentationMap.getSegmentation(leftVar);
 					final Segmentation rightSegmentation = segmentationMap.getSegmentation(rightVar);
 					final Pair<Segmentation, ArrayDomainState<STATE>> intersectionResult =
-							state.intersectSegmentations(leftSegmentation, rightSegmentation);
-					segmentationMap.union(leftVar, rightVar, intersectionResult.getFirst());
-					return intersectionResult.getSecond().updateState(segmentationMap);
+							state.intersectSegmentations(leftSegmentation, rightSegmentation, sort);
+					newSegmentationMap = intersectionResult.getSecond().getSegmentationMap();
+					newSegmentationMap.union(leftVar, rightVar, intersectionResult.getFirst());
+					return intersectionResult.getSecond().updateState(newSegmentationMap);
 				}
 				if (left instanceof IdentifierExpression) {
 					final IProgramVarOrConst leftVar = mToolkit.getBoogieVar((IdentifierExpression) left);
@@ -126,9 +148,10 @@ public class ArrayDomainExpressionProcessor<STATE extends IAbstractState<STATE>>
 					final Pair<ArrayDomainState<STATE>, Segmentation> rightPair = state.getSegmentation(right);
 					final Segmentation rightSegmentation = rightPair.getSecond();
 					final Pair<Segmentation, ArrayDomainState<STATE>> intersectionResult =
-							rightPair.getFirst().intersectSegmentations(leftSegmentation, rightSegmentation);
-					segmentationMap.put(leftVar, intersectionResult.getFirst());
-					return intersectionResult.getSecond().updateState(segmentationMap);
+							rightPair.getFirst().intersectSegmentations(leftSegmentation, rightSegmentation, sort);
+					newSegmentationMap = intersectionResult.getSecond().getSegmentationMap();
+					newSegmentationMap.put(leftVar, intersectionResult.getFirst());
+					return intersectionResult.getSecond().updateState(newSegmentationMap);
 				}
 				if (right instanceof IdentifierExpression) {
 					final Pair<ArrayDomainState<STATE>, Segmentation> leftPair = state.getSegmentation(left);
@@ -136,9 +159,10 @@ public class ArrayDomainExpressionProcessor<STATE extends IAbstractState<STATE>>
 					final IProgramVarOrConst rightVar = mToolkit.getBoogieVar((IdentifierExpression) right);
 					final Segmentation rightSegmentation = segmentationMap.getSegmentation(rightVar);
 					final Pair<Segmentation, ArrayDomainState<STATE>> intersectionResult =
-							leftPair.getFirst().intersectSegmentations(leftSegmentation, rightSegmentation);
-					segmentationMap.put(rightVar, intersectionResult.getFirst());
-					return intersectionResult.getSecond().updateState(segmentationMap);
+							leftPair.getFirst().intersectSegmentations(leftSegmentation, rightSegmentation, sort);
+					newSegmentationMap = intersectionResult.getSecond().getSegmentationMap();
+					newSegmentationMap.put(rightVar, intersectionResult.getFirst());
+					return intersectionResult.getSecond().updateState(newSegmentationMap);
 				}
 				return state;
 			}
@@ -164,7 +188,7 @@ public class ArrayDomainExpressionProcessor<STATE extends IAbstractState<STATE>>
 			final Term selectTerm = select.getSelectTerm();
 			final Pair<ArrayDomainState<STATE>, Term> oldValueResult = processTerm(newState, selectTerm);
 			final Term oldValue = oldValueResult.getSecond();
-			final IProgramVar auxVar = mToolkit.createVariable("aux", mToolkit.getType(selectTerm.getSort()));
+			final IProgramVar auxVar = mToolkit.createAuxVar(mToolkit.getType(selectTerm.getSort()));
 			final TermVariable auxVarTv = auxVar.getTermVariable();
 			substitution.put(selectTerm, auxVarTv);
 			constraints.add(SmtUtils.binaryEquality(script, auxVarTv, oldValue));
@@ -178,10 +202,14 @@ public class ArrayDomainExpressionProcessor<STATE extends IAbstractState<STATE>>
 			newSegmentationMap.put(arrayVar, segmentationPair.getSecond());
 			newState = newState.updateState(newSegmentationMap);
 		}
-		constraints.add(new Substitution(mToolkit.getManagedScript(), substitution).transform(assumption));
+		if (substitution.isEmpty()) {
+			constraints.add(assumption);
+		} else {
+			constraints.add(new Substitution(mToolkit.getManagedScript(), substitution).transform(assumption));
+		}
 		final STATE newSubState =
 				mToolkit.handleAssumptionBySubdomain(newState.getSubState(), SmtUtils.and(script, constraints));
-		return newState.updateState(newSubState).simplify();
+		return newState.updateState(newSubState);
 	}
 
 	private boolean isInvalidArrayInequality(final ArrayDomainState<STATE> state, final Term assumption) {

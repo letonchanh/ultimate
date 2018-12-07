@@ -30,7 +30,6 @@ package de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretat
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.List;
 
 import de.uni_freiburg.informatik.ultimate.boogie.ast.UnaryExpression.Operator;
 import de.uni_freiburg.informatik.ultimate.modelcheckerutils.absint.IAbstractState;
@@ -52,27 +51,28 @@ import de.uni_freiburg.informatik.ultimate.plugins.analysis.abstractinterpretati
  *            The type of states of the abstract domain.
  */
 public class UnaryExpressionEvaluator<VALUE extends INonrelationalValue<VALUE>, STATE extends IAbstractState<STATE>>
-		implements INAryEvaluator<VALUE, STATE> {
+		extends NAryEvaluator<VALUE, STATE> {
 
 	private final EvaluatorLogger mLogger;
-	private final INonrelationalValueFactory<VALUE> mNonrelationalValueFactory;
 
-	private IEvaluator<VALUE, STATE> mSubEvaluator;
 	private Operator mOperator;
+	private final VALUE mTopValue;
 
-	public UnaryExpressionEvaluator(final EvaluatorLogger logger,
+	public UnaryExpressionEvaluator(final EvaluatorLogger logger, final int maxRecursionDepth,
 			final INonrelationalValueFactory<VALUE> nonrelationalValueFactory) {
+		super(maxRecursionDepth, nonrelationalValueFactory, logger);
 		mLogger = logger;
-		mNonrelationalValueFactory = nonrelationalValueFactory;
+		mTopValue = nonrelationalValueFactory.createTopValue();
 	}
 
 	@Override
-	public List<IEvaluationResult<VALUE>> evaluate(final STATE currentState) {
+	public Collection<IEvaluationResult<VALUE>> evaluate(final STATE currentState) {
 		assert currentState != null;
 
-		final List<IEvaluationResult<VALUE>> returnList = new ArrayList<>();
+		final Collection<IEvaluationResult<VALUE>> returnList = new ArrayList<>();
 
-		final List<IEvaluationResult<VALUE>> subResults = mSubEvaluator.evaluate(currentState);
+		final Collection<IEvaluationResult<VALUE>> subResults =
+				getSubEvaluator(0).evaluate(currentState, getCurrentEvaluationRecursion() + 1);
 
 		for (final IEvaluationResult<VALUE> subResult : subResults) {
 			final VALUE returnValue;
@@ -85,12 +85,12 @@ public class UnaryExpressionEvaluator<VALUE extends INonrelationalValue<VALUE>, 
 				break;
 			case LOGICNEG:
 				returnBool = subResult.getBooleanValue().neg();
-				returnValue = mNonrelationalValueFactory.createTopValue();
+				returnValue = mTopValue;
 				break;
 			default:
 				mLogger.warnUnknownOperator(mOperator);
 				returnBool = BooleanValue.TOP;
-				returnValue = mNonrelationalValueFactory.createTopValue();
+				returnValue = mTopValue;
 				break;
 			}
 
@@ -106,6 +106,7 @@ public class UnaryExpressionEvaluator<VALUE extends INonrelationalValue<VALUE>, 
 
 	@Override
 	public Collection<STATE> inverseEvaluate(final IEvaluationResult<VALUE> computedValue, final STATE currentState) {
+
 		VALUE evalValue = computedValue.getValue();
 		BooleanValue evalBool = computedValue.getBooleanValue();
 
@@ -124,28 +125,17 @@ public class UnaryExpressionEvaluator<VALUE extends INonrelationalValue<VALUE>, 
 		final NonrelationalEvaluationResult<VALUE> evalResult =
 				new NonrelationalEvaluationResult<>(evalValue, evalBool);
 		mLogger.logInverseEvaluation(mOperator, evalResult, computedValue);
-		return mSubEvaluator.inverseEvaluate(evalResult, currentState);
-	}
-
-	@Override
-	public void addSubEvaluator(final IEvaluator<VALUE, STATE> evaluator) {
-		assert evaluator != null;
-
-		if (mSubEvaluator == null) {
-			mSubEvaluator = evaluator;
-		} else {
-			throw new UnsupportedOperationException("Cannot add more evaluators to this unary expression evaluator.");
-		}
+		return getSubEvaluator(0).inverseEvaluate(evalResult, currentState, getCurrentInverseEvaluationRecursion() + 1);
 	}
 
 	@Override
 	public boolean hasFreeOperands() {
-		return mSubEvaluator == null;
+		return getNumberOfSubEvaluators() == 0;
 	}
 
 	@Override
 	public boolean containsBool() {
-		return mSubEvaluator.containsBool();
+		return getSubEvaluator(0).containsBool();
 	}
 
 	@Override
@@ -177,7 +167,7 @@ public class UnaryExpressionEvaluator<VALUE extends INonrelationalValue<VALUE>, 
 		default:
 		}
 
-		sb.append(mSubEvaluator);
+		sb.append(getSubEvaluator(0));
 
 		if (mOperator == Operator.OLD) {
 			sb.append(')');
@@ -188,6 +178,6 @@ public class UnaryExpressionEvaluator<VALUE extends INonrelationalValue<VALUE>, 
 
 	@Override
 	public EvaluatorType getType() {
-		return mSubEvaluator.getType();
+		return getSubEvaluator(0).getType();
 	}
 }

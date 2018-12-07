@@ -31,6 +31,7 @@ package de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -50,6 +51,7 @@ import de.uni_freiburg.informatik.ultimate.boogie.ast.AssumeStatement;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.Attribute;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.BinaryExpression;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.Body;
+import de.uni_freiburg.informatik.ultimate.boogie.ast.BoogieASTNode;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.CallStatement;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.ConstDeclaration;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.Declaration;
@@ -59,7 +61,6 @@ import de.uni_freiburg.informatik.ultimate.boogie.ast.IdentifierExpression;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.IfStatement;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.LeftHandSide;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.NamedAttribute;
-import de.uni_freiburg.informatik.ultimate.boogie.ast.NamedType;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.PrimitiveType;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.Procedure;
 import de.uni_freiburg.informatik.ultimate.boogie.ast.RequiresSpecification;
@@ -78,8 +79,10 @@ import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.C
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.CTranslationUtil;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.FunctionDeclarations;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.TranslationSettings;
+import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.chandler.MemoryHandler.MemoryArea;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.chandler.MemoryHandler.MemoryModelDeclarations;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.expressiontranslation.BitvectorTranslation;
+import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.expressiontranslation.BitvectorTranslation.SmtRoundingMode;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.base.expressiontranslation.ExpressionTranslation;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.container.AuxVarInfo;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.container.AuxVarInfoBuilder;
@@ -87,7 +90,6 @@ import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.contai
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.container.c.CPrimitive;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.container.c.CPrimitive.CPrimitiveCategory;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.container.c.CType;
-import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.exception.UnsupportedSyntaxException;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.result.CDeclaration;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.result.ExpressionResult;
 import de.uni_freiburg.informatik.ultimate.cdt.translation.implementation.result.ExpressionResultBuilder;
@@ -228,7 +230,7 @@ public class PostProcessor {
 		if (mSettings.isBitvectorTranslation()) {
 			decl.addAll(declarePrimitiveDataTypeSynonyms(loc));
 
-			if ((mTypeHandler).areFloatingTypesNeeded()) {
+			if (mTypeHandler.areFloatingTypesNeeded()) {
 				decl.addAll(declareFloatDataTypes(loc));
 			}
 
@@ -274,102 +276,72 @@ public class PostProcessor {
 	public ArrayList<Declaration> declareFloatDataTypes(final ILocation loc) {
 		final ArrayList<Declaration> decls = new ArrayList<>();
 
-		// Roundingmodes, for now RNE hardcoded
 		final Attribute[] attributesRM;
 		if (mSettings.overapproximateFloatingPointOperations()) {
 			attributesRM = new Attribute[0];
 		} else {
-			final String smtlibRmIdentifier = "RoundingMode";
+			final String smtlibRmIdentifier = BitvectorTranslation.ROUNDING_MODE_SMT_TYPE_IDENTIFIER;
 			attributesRM = new Attribute[1];
 			attributesRM[0] = new NamedAttribute(loc, FunctionDeclarations.BUILTIN_IDENTIFIER,
 					new Expression[] { ExpressionFactory.createStringLiteral(loc, smtlibRmIdentifier) });
 		}
 		final String[] typeParamsRM = new String[0];
-		decls.add(new TypeDeclaration(loc, attributesRM, false, BitvectorTranslation.BOOGIE_ROUNDING_MODE_IDENTIFIER,
-				typeParamsRM));
+		decls.add(new TypeDeclaration(loc, attributesRM, false,
+				BitvectorTranslation.ROUNDING_MODE_BOOGIE_TYPE_IDENTIFIER, typeParamsRM));
 
-		final Attribute[] attributesRNE;
-		final Attribute[] attributesRTZ;
-		if (mSettings.overapproximateFloatingPointOperations()) {
-			attributesRNE = new Attribute[0];
-			attributesRTZ = new Attribute[0];
-		} else {
-			final Attribute attributeRNE = new NamedAttribute(loc, FunctionDeclarations.BUILTIN_IDENTIFIER,
-					new Expression[] { ExpressionFactory.createStringLiteral(loc, "RNE") });
-			final Attribute attributeRTZ = new NamedAttribute(loc, FunctionDeclarations.BUILTIN_IDENTIFIER,
-					new Expression[] { ExpressionFactory.createStringLiteral(loc, "RTZ") });
-			attributesRNE = new Attribute[] { attributeRNE };
-			attributesRTZ = new Attribute[] { attributeRTZ };
+		for (final SmtRoundingMode mode : SmtRoundingMode.values()) {
+			final Attribute[] attribute;
+			if (mSettings.overapproximateFloatingPointOperations()) {
+				attribute = new Attribute[0];
+			} else {
+				attribute = new Attribute[] { new NamedAttribute(loc, FunctionDeclarations.BUILTIN_IDENTIFIER,
+						new Expression[] { ExpressionFactory.createStringLiteral(loc, mode.getSmtIdentifier()) }) };
+			}
+			final ConstDeclaration modeDecl =
+					new ConstDeclaration(loc, attribute, false, mode.getBoogieVarlist(), null, false);
+			decls.add(modeDecl);
 		}
-		decls.add(
-				new ConstDeclaration(loc, attributesRNE, false,
-						new VarList(loc, new String[] { BitvectorTranslation.BOOGIE_ROUNDING_MODE_RNE },
-								new NamedType(loc, BitvectorTranslation.TYPE_OF_BOOGIE_ROUNDING_MODES,
-										BitvectorTranslation.BOOGIE_ROUNDING_MODE_IDENTIFIER, new ASTType[0])),
-						null, false));
-		decls.add(
-				new ConstDeclaration(loc, attributesRTZ, false,
-						new VarList(loc, new String[] { BitvectorTranslation.BOOGIE_ROUNDING_MODE_RTZ },
-								new NamedType(loc, BitvectorTranslation.TYPE_OF_BOOGIE_ROUNDING_MODES,
-										BitvectorTranslation.BOOGIE_ROUNDING_MODE_IDENTIFIER, new ASTType[0])),
-						null, false));
 
 		for (final CPrimitive.CPrimitives cPrimitive : CPrimitive.CPrimitives.values()) {
 
 			final CPrimitive cPrimitive0 = new CPrimitive(cPrimitive);
-
-			if (cPrimitive0.getGeneralType() == CPrimitiveCategory.FLOATTYPE && !cPrimitive0.isComplexType()) {
-
-				if (!mSettings.overapproximateFloatingPointOperations()) {
-					// declare floating point constructors here because we might
-					// always need them for our backtranslation
-					(mExpressionTranslation).declareFloatingPointConstructors(loc, new CPrimitive(cPrimitive));
-					mExpressionTranslation.declareFloatConstant(loc, BitvectorTranslation.SMT_LIB_MINUS_INF,
-							new CPrimitive(cPrimitive));
-					(mExpressionTranslation).declareFloatConstant(loc, BitvectorTranslation.SMT_LIB_PLUS_INF,
-							new CPrimitive(cPrimitive));
-					(mExpressionTranslation).declareFloatConstant(loc, BitvectorTranslation.SMT_LIB_NAN,
-							new CPrimitive(cPrimitive));
-					(mExpressionTranslation).declareFloatConstant(loc, BitvectorTranslation.SMT_LIB_MINUS_ZERO,
-							new CPrimitive(cPrimitive));
-					(mExpressionTranslation).declareFloatConstant(loc, BitvectorTranslation.SMT_LIB_PLUS_ZERO,
-							new CPrimitive(cPrimitive));
-				}
-
-				final Attribute[] attributes;
-				if (mSettings.overapproximateFloatingPointOperations()) {
-					attributes = new Attribute[0];
-				} else {
-					attributes = new Attribute[2];
-					attributes[0] = new NamedAttribute(loc, FunctionDeclarations.BUILTIN_IDENTIFIER,
-							new Expression[] { ExpressionFactory.createStringLiteral(loc, "FloatingPoint") });
-					final int bytesize = mTypeSize.getSize(cPrimitive);
-					final int[] indices = new int[2];
-					switch (bytesize) {
-					case 4:
-						indices[0] = 8;
-						indices[1] = 24;
-						break;
-					case 8:
-						indices[0] = 11;
-						indices[1] = 53;
-						break;
-					case 12: // because of 80bit long doubles on linux x86
-					case 16:
-						indices[0] = 15;
-						indices[1] = 113;
-						break;
-					default:
-						throw new UnsupportedSyntaxException(loc, "unknown primitive type");
-					}
-					attributes[1] = new NamedAttribute(loc, FunctionDeclarations.INDEX_IDENTIFIER,
-							new Expression[] { ExpressionFactory.createIntegerLiteral(loc, String.valueOf(indices[0])),
-									ExpressionFactory.createIntegerLiteral(loc, String.valueOf(indices[1])) });
-				}
-				final String identifier = "C_" + cPrimitive.name();
-				final String[] typeParams = new String[0];
-				decls.add(new TypeDeclaration(loc, attributes, false, identifier, typeParams));
+			if (cPrimitive0.getGeneralType() != CPrimitiveCategory.FLOATTYPE || cPrimitive0.isComplexType()) {
+				continue;
 			}
+
+			if (!mSettings.overapproximateFloatingPointOperations()) {
+				// declare floating point constructors here because we might
+				// always need them for our backtranslation
+				mExpressionTranslation.declareFloatingPointConstructors(loc, new CPrimitive(cPrimitive));
+				mExpressionTranslation.declareFloatConstant(loc, BitvectorTranslation.SMT_LIB_MINUS_INF,
+						new CPrimitive(cPrimitive));
+				mExpressionTranslation.declareFloatConstant(loc, BitvectorTranslation.SMT_LIB_PLUS_INF,
+						new CPrimitive(cPrimitive));
+				mExpressionTranslation.declareFloatConstant(loc, BitvectorTranslation.SMT_LIB_NAN,
+						new CPrimitive(cPrimitive));
+				mExpressionTranslation.declareFloatConstant(loc, BitvectorTranslation.SMT_LIB_MINUS_ZERO,
+						new CPrimitive(cPrimitive));
+				mExpressionTranslation.declareFloatConstant(loc, BitvectorTranslation.SMT_LIB_PLUS_ZERO,
+						new CPrimitive(cPrimitive));
+			}
+
+			final Attribute[] attributes;
+			if (mSettings.overapproximateFloatingPointOperations()) {
+				attributes = new Attribute[0];
+			} else {
+				attributes = new Attribute[2];
+				attributes[0] = new NamedAttribute(loc, FunctionDeclarations.BUILTIN_IDENTIFIER,
+						new Expression[] { ExpressionFactory.createStringLiteral(loc, "FloatingPoint") });
+				final int[] indices = mTypeSize.getFloatingPointSize(cPrimitive).getIndices();
+				attributes[1] =
+						new NamedAttribute(loc, FunctionDeclarations.INDEX_IDENTIFIER,
+								new Expression[] {
+										ExpressionFactory.createIntegerLiteral(loc, String.valueOf(indices[0])),
+										ExpressionFactory.createIntegerLiteral(loc, String.valueOf(indices[1])) });
+			}
+			final String identifier = "C_" + cPrimitive.name();
+			final String[] typeParams = new String[0];
+			decls.add(new TypeDeclaration(loc, attributes, false, identifier, typeParams));
 		}
 		return decls;
 	}
@@ -455,7 +427,7 @@ public class PostProcessor {
 
 		mProcedureManager.beginProcedureScope(mCHandler, mProcedureManager.getProcedureInfo(dispatchingProcedureName));
 
-		final boolean resultTypeIsVoid = (funcSignature.getReturnType() == null);
+		final boolean resultTypeIsVoid = funcSignature.getReturnType() == null;
 
 		final ExpressionResultBuilder builder = new ExpressionResultBuilder();
 
@@ -627,30 +599,6 @@ public class PostProcessor {
 
 		final ArrayList<VariableDeclaration> initDecl = new ArrayList<>();
 
-		if (mMemoryHandler.getRequiredMemoryModelFeatures().isMemoryModelInfrastructureRequired()) {
-
-			// set #valid[0] = 0 (i.e., the memory at the NULL-pointer is not allocated)
-			final Expression zero = mTypeSize.constructLiteralForIntegerType(translationUnitLoc,
-					mExpressionTranslation.getCTypeOfPointerComponents(), BigInteger.ZERO);
-			final Expression literalThatRepresentsFalse = mMemoryHandler.getBooleanArrayHelper().constructFalse();
-			final AssignmentStatement assignment = MemoryHandler.constructOneDimensionalArrayUpdate(translationUnitLoc,
-					zero, mMemoryHandler.getValidArrayLhs(translationUnitLoc), literalThatRepresentsFalse);
-			initStatements.add(0, assignment);
-
-			// set the value of the NULL-constant to NULL = { base : 0, offset : 0 }
-			final VariableLHS slhs = ExpressionFactory.constructVariableLHS(translationUnitLoc,
-					mTypeHandler.getBoogiePointerType(), SFO.NULL, DeclarationInformation.DECLARATIONINFO_GLOBAL);
-			initStatements.add(0,
-					StatementFactory.constructAssignmentStatement(translationUnitLoc, new LeftHandSide[] { slhs },
-							new Expression[] { ExpressionFactory.constructStructConstructor(translationUnitLoc,
-									new String[] { "base", "offset" },
-									new Expression[] { mTypeSize.constructLiteralForIntegerType(translationUnitLoc,
-											mExpressionTranslation.getCTypeOfPointerComponents(), BigInteger.ZERO),
-											mTypeSize.constructLiteralForIntegerType(translationUnitLoc,
-													mExpressionTranslation.getCTypeOfPointerComponents(),
-													BigInteger.ZERO) }) }));
-		}
-
 		/*
 		 * We need to follow some order when addin the statements to init. Current strategy: <li> First come all the
 		 * statements that have been added via {@link StaticObjectsHandler.addStatementsForUltimateInit} manually. <li>
@@ -684,7 +632,8 @@ public class PostProcessor {
 
 					if (mCHandler.isHeapVar(id)) {
 						final LocalLValue llVal = new LocalLValue(lhs, en.getValue().getType(), null);
-						staticObjectInitStatements.add(mMemoryHandler.getMallocCall(llVal, currentDeclsLoc, hook));
+						staticObjectInitStatements.add(
+								mMemoryHandler.getUltimateMemAllocCall(llVal, currentDeclsLoc, hook, MemoryArea.STACK));
 						proceduresCalledByUltimateInit.add(MemoryModelDeclarations.Ultimate_Alloc.name());
 					}
 
@@ -703,11 +652,44 @@ public class PostProcessor {
 				}
 			}
 		}
+		if (mMemoryHandler.getRequiredMemoryModelFeatures().isMemoryModelInfrastructureRequired()) {
+
+			// set #valid[0] = 0 (i.e., the memory at the NULL-pointer is not allocated)
+			final Expression zero = mTypeSize.constructLiteralForIntegerType(translationUnitLoc,
+					mExpressionTranslation.getCTypeOfPointerComponents(), BigInteger.ZERO);
+			final Expression literalThatRepresentsFalse = mMemoryHandler.getBooleanArrayHelper().constructFalse();
+			final AssignmentStatement assignment = MemoryHandler.constructOneDimensionalArrayUpdate(translationUnitLoc,
+					zero, mMemoryHandler.getValidArrayLhs(translationUnitLoc), literalThatRepresentsFalse);
+			initStatements.add(0, assignment);
+
+			// set the value of the NULL-constant to NULL = { base : 0, offset : 0 }
+			final VariableLHS slhs = ExpressionFactory.constructVariableLHS(translationUnitLoc,
+					mTypeHandler.getBoogiePointerType(), SFO.NULL, DeclarationInformation.DECLARATIONINFO_GLOBAL);
+			initStatements.add(0,
+					StatementFactory
+							.constructAssignmentStatement(translationUnitLoc, new LeftHandSide[] { slhs },
+									new Expression[] {
+											ExpressionFactory.constructStructConstructor(translationUnitLoc,
+													new String[] { "base", "offset" }, new Expression[] {
+															mTypeSize.constructLiteralForIntegerType(translationUnitLoc,
+																	mExpressionTranslation
+																			.getCTypeOfPointerComponents(),
+																	BigInteger.ZERO),
+															mTypeSize.constructLiteralForIntegerType(translationUnitLoc,
+																	mExpressionTranslation
+																			.getCTypeOfPointerComponents(),
+																	BigInteger.ZERO) }) }));
+		}
 
 		mStaticObjectsHandler.freeze();
 		initStatements.addAll(mStaticObjectsHandler.getStatementsForUltimateInit());
 		initStatements.addAll(staticObjectInitStatements);
 
+		// because we process declarations out of order in CHandler , we need to reorder them here
+		final Comparator<? super BoogieASTNode> c =
+				(o1, o2) -> Integer.compare(o1.getLocation().getStartLine(), o2.getLocation().getStartLine());
+		initDecl.sort(c);
+		initStatements.sort(c);
 		/*
 		 * note that we only have to deal with the implementation part of the procedure, the declaration is managed by
 		 * the FunctionHandler

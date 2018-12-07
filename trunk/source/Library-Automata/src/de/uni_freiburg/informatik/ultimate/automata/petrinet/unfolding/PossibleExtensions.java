@@ -27,6 +27,7 @@
  */
 package de.uni_freiburg.informatik.ultimate.automata.petrinet.unfolding;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -55,17 +56,33 @@ import de.uni_freiburg.informatik.ultimate.automata.petrinet.netdatastructures.S
 public class PossibleExtensions<LETTER, PLACE> implements IPossibleExtensions<LETTER, PLACE> {
 
 	private final PriorityQueue<Event<LETTER, PLACE>> mPe;
+	/**
+	 * If {@link Event} is known to be cut-off event we can move it immediately to
+	 * front because it will not create descendants. This optimization keeps the queue smaller.
+	 */
+	private final ArrayDeque<Event<LETTER, PLACE>> mFastpathCutoffEventList;
 	private final BranchingProcess<LETTER, PLACE> mBranchingProcess;
 	private final boolean mLazySuccessorComputation = !false;
+
+	/**
+	 * A candidate is useful if it lead to at least one new possible extension.
+	 */
+	private int mUsefulExtensionCandidates = 0;
+	private int mUselessExtensionCandidates = 0;
 
 	public PossibleExtensions(final BranchingProcess<LETTER, PLACE> branchingProcess, final Comparator<Event<LETTER, PLACE>> order) {
 		mBranchingProcess = branchingProcess;
 		mPe = new PriorityQueue<>(order);
+		mFastpathCutoffEventList = new ArrayDeque<>();
 	}
 
 	@Override
 	public Event<LETTER, PLACE> remove() {
-		return mPe.remove();
+		if (mFastpathCutoffEventList.isEmpty()) {
+			return mPe.remove();
+		} else {
+			return mFastpathCutoffEventList.removeFirst();
+		}
 	}
 
 	@Override
@@ -75,7 +92,13 @@ public class PossibleExtensions<LETTER, PLACE> implements IPossibleExtensions<LE
 			if (candidate.getInstantiated().isEmpty()) {
 				throw new AssertionError("at least one place has to be instantiated");
 			}
+			final int possibleExtensionsBefore = size();
 			evolveCandidate(candidate);
+			if (size() > possibleExtensionsBefore) {
+				mUsefulExtensionCandidates++;
+			} else {
+				mUselessExtensionCandidates++;
+			}
 		}
 	}
 
@@ -87,7 +110,15 @@ public class PossibleExtensions<LETTER, PLACE> implements IPossibleExtensions<LE
 	private void evolveCandidate(final Candidate<LETTER, PLACE> cand) {
 		if (cand.isFullyInstantiated()) {
 			for (final ITransition<LETTER, PLACE> trans : cand.getTransition().getTransitions()) {
-				mPe.add(new Event<>(cand.getInstantiated(), trans, mBranchingProcess));
+				final Event<LETTER, PLACE> newEvent = new Event<>(cand.getInstantiated(), trans, mBranchingProcess);
+				if (newEvent.isCutoffEvent()) {
+					mFastpathCutoffEventList.add(newEvent);
+				} else {
+					final boolean somethingWasAdded = mPe.add(newEvent);
+					if (!somethingWasAdded) {
+						throw new AssertionError("Event was already in queue.");
+					}
+				}
 			}
 			return;
 		}
@@ -97,10 +128,12 @@ public class PossibleExtensions<LETTER, PLACE> implements IPossibleExtensions<LE
 			// equality intended here
 			assert c.getPlace().equals(p);
 			assert !cand.getInstantiated().contains(c);
-			if (mBranchingProcess.getCoRelation().isCoset(cand.getInstantiated(), c)) {
-				cand.instantiateNext(c);
-				evolveCandidate(cand);
-				cand.undoOneInstantiation();
+			if (!c.getPredecessorEvent().isCutoffEvent()) {
+				if (mBranchingProcess.getCoRelation().isCoset(cand.getInstantiated(), c)) {
+					cand.instantiateNext(c);
+					evolveCandidate(cand);
+					cand.undoOneInstantiation();
+				}
 			}
 		}
 	}
@@ -143,11 +176,21 @@ public class PossibleExtensions<LETTER, PLACE> implements IPossibleExtensions<LE
 
 	@Override
 	public boolean isEmpy() {
-		return mPe.isEmpty();
+		return mPe.isEmpty() && mFastpathCutoffEventList.isEmpty();
 	}
 
 	@Override
 	public int size() {
-		return mPe.size();
+		return mPe.size() + mFastpathCutoffEventList.size();
 	}
+
+	public int getUsefulExtensionCandidates() {
+		return mUsefulExtensionCandidates;
+	}
+
+	public int getUselessExtensionCandidates() {
+		return mUselessExtensionCandidates;
+	}
+
+
 }

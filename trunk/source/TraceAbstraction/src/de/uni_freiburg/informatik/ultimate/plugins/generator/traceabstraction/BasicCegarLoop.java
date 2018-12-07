@@ -32,8 +32,10 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
@@ -64,6 +66,9 @@ import de.uni_freiburg.informatik.ultimate.automata.nestedword.operations.Remove
 import de.uni_freiburg.informatik.ultimate.automata.nestedword.operations.oldapi.IOpWithDelayedDeadEndRemoval;
 import de.uni_freiburg.informatik.ultimate.automata.nestedword.senwa.DifferenceSenwa;
 import de.uni_freiburg.informatik.ultimate.automata.nestedword.transitions.OutgoingCallTransition;
+import de.uni_freiburg.informatik.ultimate.automata.petrinet.PetriNetNot1SafeException;
+import de.uni_freiburg.informatik.ultimate.automata.petrinet.netdatastructures.BoundedPetriNet;
+import de.uni_freiburg.informatik.ultimate.automata.petrinet.operations.PetriNet2FiniteAutomaton;
 import de.uni_freiburg.informatik.ultimate.core.lib.exceptions.RunningTaskInfo;
 import de.uni_freiburg.informatik.ultimate.core.lib.exceptions.TaskCanceledException;
 import de.uni_freiburg.informatik.ultimate.core.lib.exceptions.TaskCanceledException.UserDefinedLimit;
@@ -107,6 +112,7 @@ import de.uni_freiburg.informatik.ultimate.plugins.generator.traceabstraction.in
 import de.uni_freiburg.informatik.ultimate.plugins.generator.traceabstraction.interpolantautomata.transitionappender.NondeterministicInterpolantAutomaton;
 import de.uni_freiburg.informatik.ultimate.plugins.generator.traceabstraction.pathinvariants.PathInvariantsGenerator;
 import de.uni_freiburg.informatik.ultimate.plugins.generator.traceabstraction.pathinvariants.internal.DangerInvariantGuesser;
+import de.uni_freiburg.informatik.ultimate.plugins.generator.traceabstraction.predicates.IMLPredicate;
 import de.uni_freiburg.informatik.ultimate.plugins.generator.traceabstraction.predicates.InductivityCheck;
 import de.uni_freiburg.informatik.ultimate.plugins.generator.traceabstraction.predicates.PredicateFactory;
 import de.uni_freiburg.informatik.ultimate.plugins.generator.traceabstraction.preferences.TAPreferences;
@@ -247,9 +253,9 @@ public class BasicCegarLoop<LETTER extends IIcfgTransition<?>> extends AbstractC
 		mErrorGeneralizationEngine = new ErrorGeneralizationEngine<>(services);
 		mHaf = new HoareAnnotationFragments<>(mLogger, mHoareAnnotationLocations, mPref.getHoareAnnotationPositions());
 		mStateFactoryForRefinement = new PredicateFactoryRefinement(mServices, super.mCsToolkit.getManagedScript(),
-				predicateFactory, mPref.computeHoareAnnotation(), mHoareAnnotationLocations);
+				predicateFactory, computeHoareAnnotation, mHoareAnnotationLocations);
 		mPredicateFactoryInterpolantAutomata = new PredicateFactoryForInterpolantAutomata(
-				super.mCsToolkit.getManagedScript(), mPredicateFactory, mPref.computeHoareAnnotation());
+				super.mCsToolkit.getManagedScript(), mPredicateFactory, computeHoareAnnotation);
 
 		mAssertCodeBlocksIncrementally = mServices.getPreferenceProvider(Activator.PLUGIN_ID).getEnum(
 				TraceAbstractionPreferenceInitializer.LABEL_ASSERT_CODEBLOCKS_INCREMENTALLY,
@@ -313,8 +319,29 @@ public class BasicCegarLoop<LETTER extends IIcfgTransition<?>> extends AbstractC
 
 	@Override
 	protected void getInitialAbstraction() throws AutomataLibraryException {
-		mAbstraction = CFG2NestedWordAutomaton.constructAutomatonWithSPredicates(mServices, super.mIcfg,
+		if (super.mIcfg.getCfgSmtToolkit().getConcurrencyInformation().getThreadInstanceMap().isEmpty()) {
+			mAbstraction = CFG2NestedWordAutomaton.constructAutomatonWithSPredicates(mServices, super.mIcfg,
 				mStateFactoryForRefinement, super.mErrorLocs, mPref.interprocedural(), mPredicateFactory);
+		} else {
+			final boolean addThreadUsageMonitors = false;
+			final BoundedPetriNet<LETTER, IPredicate> net = CFG2NestedWordAutomaton.constructPetriNetWithSPredicates(
+					mServices, mIcfg, mStateFactoryForRefinement, mErrorLocs, false, mPredicateFactory,
+					addThreadUsageMonitors);
+			try {
+			mAbstraction = new PetriNet2FiniteAutomaton<LETTER, IPredicate>(new AutomataLibraryServices(mServices),
+					mStateFactoryForRefinement, net).getResult();
+			} catch (final PetriNetNot1SafeException e) {
+				final Collection<?> unsafePlaces = e.getUnsafePlaces();
+				if (unsafePlaces == null) {
+					throw new AssertionError("Unable to find Petri net place that violates 1-safety");
+				} else {
+					final ISLPredicate unsafePlace = (ISLPredicate) unsafePlaces.iterator().next();
+					final String proc = unsafePlace.getProgramPoint().getProcedure();
+					throw new IllegalStateException(
+							"Petrification does not provide enough thread instances for " + proc);
+				}
+			}
+		}
 
 		if (mComputeHoareAnnotation
 				&& mPref.getHoareAnnotationPositions() == HoareAnnotationPositions.LoopsAndPotentialCycles) {
@@ -492,8 +519,7 @@ public class BasicCegarLoop<LETTER extends IIcfgTransition<?>> extends AbstractC
 		mInterpolAutomaton = mTraceCheckAndRefinementEngine.getInfeasibilityProof();
 
 		if (mPref.dumpAutomata()) {
-			// TODO Matthias: Iteration should probably added to TaskIdentifier
-			final String filename = mTaskIdentifier + "_Iteration" + mIteration + "_RawFloydHoareAutomaton";
+			final String filename = new SubtaskIterationIdentifier(mTaskIdentifier, getIteration()) + "_RawFloydHoareAutomaton";
 			super.writeAutomatonToFile(mInterpolAutomaton, filename);
 		}
 
@@ -703,14 +729,13 @@ public class BasicCegarLoop<LETTER extends IIcfgTransition<?>> extends AbstractC
 			}
 
 			if (mPref.dumpAutomata()) {
-				// TODO Matthias: Iteration should probably added to TaskIdentifier
-				final String filename = mTaskIdentifier + "Iteration" + mIteration + "Enhanced"
+				final String filename = new SubtaskIterationIdentifier(mTaskIdentifier, getIteration()) + "Enhanced"
 						+ automatonType.getShortString() + "Automaton";
 				super.writeAutomatonToFile(subtrahend, filename);
 			}
 			if (mPref.dumpAutomata()) {
-				// TODO Matthias: Iteration should probably added to TaskIdentifier
-				final String filename = mTaskIdentifier + "Iteration" + mIteration + "AbstractionAfterDifference";
+				final String filename = new SubtaskIterationIdentifier(mTaskIdentifier, getIteration())
+						+ "AbstractionAfterDifference";
 				super.writeAutomatonToFile(subtrahend, filename);
 			}
 			dumpOrAppendAutomatonForReuseIfEnabled(subtrahend, predicateUnifier);
@@ -933,8 +958,10 @@ public class BasicCegarLoop<LETTER extends IIcfgTransition<?>> extends AbstractC
 			final PredicateFactoryResultChecking resultCheckPredFac, final Minimization minimization)
 			throws AutomataOperationCanceledException, AutomataLibraryException, AssertionError {
 
-		final Function<ISLPredicate, IcfgLocation> lcsProvider = x -> x.getProgramPoint();
-		AutomataMinimization<IcfgLocation, ISLPredicate, LETTER> am;
+		final Function<IPredicate, Set<IcfgLocation>> lcsProvider = x -> ((x instanceof ISLPredicate)
+				? Collections.singleton(((ISLPredicate) x).getProgramPoint())
+				: new HashSet<IcfgLocation>(Arrays.asList(((IMLPredicate) x).getProgramPoints())));
+		AutomataMinimization<Set<IcfgLocation>, IPredicate, LETTER> am;
 		try {
 			am = new AutomataMinimization<>(mServices, (INestedWordAutomaton<LETTER, IPredicate>) mAbstraction,
 					minimization, mComputeHoareAnnotation, mIteration, predicateFactoryRefinement,

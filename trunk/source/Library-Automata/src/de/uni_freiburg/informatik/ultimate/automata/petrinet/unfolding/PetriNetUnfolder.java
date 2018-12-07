@@ -42,11 +42,13 @@ import de.uni_freiburg.informatik.ultimate.automata.petrinet.IPetriNet;
 import de.uni_freiburg.informatik.ultimate.automata.petrinet.IPetriNetSuccessorProvider;
 import de.uni_freiburg.informatik.ultimate.automata.petrinet.ITransition;
 import de.uni_freiburg.informatik.ultimate.automata.petrinet.Marking;
+import de.uni_freiburg.informatik.ultimate.automata.petrinet.PetriNetNot1SafeException;
 import de.uni_freiburg.informatik.ultimate.automata.petrinet.PetriNetRun;
 import de.uni_freiburg.informatik.ultimate.automata.petrinet.operations.Accepts;
 import de.uni_freiburg.informatik.ultimate.automata.petrinet.operations.PetriNet2FiniteAutomaton;
 import de.uni_freiburg.informatik.ultimate.automata.petrinet.operations.RemoveUnreachable;
 import de.uni_freiburg.informatik.ultimate.automata.statefactory.IPetriNet2FiniteAutomatonStateFactory;
+import de.uni_freiburg.informatik.ultimate.core.lib.exceptions.RunningTaskInfo;
 import de.uni_freiburg.informatik.ultimate.core.model.services.ILogger;
 
 /**
@@ -86,10 +88,11 @@ public final class PetriNetUnfolder<LETTER, PLACE> {
 	 *            if false, the complete finite Prefix will be build.
 	 * @throws AutomataOperationCanceledException
 	 *             if timeout exceeds
+	 * @throws PetriNetNot1SafeException
 	 */
 	public PetriNetUnfolder(final AutomataLibraryServices services, final IPetriNetSuccessorProvider<LETTER, PLACE> operand,
 			final UnfoldingOrder order, final boolean sameTransitionCutOff, final boolean stopIfAcceptingRunFound)
-			throws AutomataOperationCanceledException {
+			throws AutomataOperationCanceledException, PetriNetNot1SafeException {
 		mServices = services;
 		mLogger = mServices.getLoggingService().getLogger(LibraryIdentifiers.PLUGIN_ID);
 		mOperand = operand;
@@ -123,7 +126,7 @@ public final class PetriNetUnfolder<LETTER, PLACE> {
 		return mStatistics;
 	}
 
-	private void computeUnfolding() throws AutomataOperationCanceledException {
+	private void computeUnfolding() throws AutomataOperationCanceledException, PetriNetNot1SafeException {
 		boolean someInitialPlaceIsAccepting = false;
 		for (final Condition<LETTER, PLACE> c : mUnfolding.getDummyRoot().getSuccessorConditions()) {
 			if (mOperand.isAccepting(c.getPlace())) {
@@ -148,15 +151,23 @@ public final class PetriNetUnfolder<LETTER, PLACE> {
 			}
 
 			if (!mServices.getProgressAwareTimer().continueProcessing()) {
-				throw new AutomataOperationCanceledException(this.getClass());
+				final int numberOfUselessExtensionCandidates = ((PossibleExtensions<LETTER, PLACE>) mPossibleExtensions)
+						.getUselessExtensionCandidates();
+				final int numberOfExtensionsCandidates = ((PossibleExtensions<LETTER, PLACE>) mPossibleExtensions)
+						.getUsefulExtensionCandidates() + numberOfUselessExtensionCandidates;
+				final RunningTaskInfo rti = new RunningTaskInfo(getClass(),
+						"constructing finite prefix that currently has " + mUnfolding.getConditions().size()
+								+ " conditions, " + mUnfolding.getEvents().size() + " events, and "
+								+ mPossibleExtensions.size() + " possible extensions. " + numberOfExtensionsCandidates
+								+ " extension candidates were considered " + numberOfUselessExtensionCandidates
+								+ " were useless");
+				throw new AutomataOperationCanceledException(rti);
 			}
 		}
 	}
 
-	private boolean computeUnfoldingHelper(final Event<LETTER, PLACE> event) {
-		if (parentIsCutoffEvent(event)) {
-			return false;
-		}
+	private boolean computeUnfoldingHelper(final Event<LETTER, PLACE> event) throws PetriNetNot1SafeException {
+		assert !parentIsCutoffEvent(event) : "We must not construct successors of cut-off events.";
 		final boolean succOfEventIsAccpting = mUnfolding.addEvent(event);
 		// assert !unfolding.pairwiseConflictOrCausalRelation(e.getPredecessorConditions());
 		if (succOfEventIsAccpting && mRun == null) {
@@ -168,8 +179,11 @@ public final class PetriNetUnfolder<LETTER, PLACE> {
 		if (mUnfolding.isCutoffEvent(event, mOrder, mSameTransitionCutOff)) {
 			mLogger.debug("Constructed     Cut-off-Event: " + event.toString());
 		} else {
+			final long sizeBefore = mPossibleExtensions.size();
 			mPossibleExtensions.update(event);
+			final long newPossibleExtensions = mPossibleExtensions.size() - sizeBefore;
 			mLogger.debug("Constructed Non-cut-off-Event: " + event.toString());
+			mLogger.debug("The Event lead to " + newPossibleExtensions + " new possible extensions.");
 		}
 		mLogger.debug("Possible Extension size: " + mPossibleExtensions.size() + ", total #Events: "
 				+ mUnfolding.getEvents().size() + ", total #Conditions: " + mUnfolding.getConditions().size());
@@ -269,7 +283,7 @@ public final class PetriNetUnfolder<LETTER, PLACE> {
 	}
 
 	public boolean checkResult(final IPetriNet2FiniteAutomatonStateFactory<PLACE> stateFactory)
-			throws AutomataOperationCanceledException {
+			throws AutomataOperationCanceledException, PetriNetNot1SafeException {
 		if (!(mOperand instanceof IPetriNet)) {
 			mLogger.warn("Will not check Unfolding because operand is constructed on-demand" );
 			return true;
@@ -357,7 +371,7 @@ public final class PetriNetUnfolder<LETTER, PLACE> {
 			return "co relation was queried " + mUnfolding.getCoRelation().getQueryCounter() + " times.";
 		}
 
-		public int getCoRelationQueries() {
+		public long getCoRelationQueries() {
 			return mUnfolding.getCoRelation().getQueryCounter();
 		}
 
@@ -380,5 +394,15 @@ public final class PetriNetUnfolder<LETTER, PLACE> {
 			final long reachableTransitions = RemoveUnreachable.reachableTransitions(mUnfolding).size();
 			return transitionsInNet - reachableTransitions;
 		}
+
+		public int getNumberOfUselessExtensionCandidates() {
+			return ((PossibleExtensions<LETTER, PLACE>) mPossibleExtensions).getUselessExtensionCandidates();
+		}
+
+		public int getNumberOfExtensionCandidates() {
+			return ((PossibleExtensions<LETTER, PLACE>) mPossibleExtensions)
+					.getUsefulExtensionCandidates() + getNumberOfUselessExtensionCandidates();
+		}
+
 	}
 }

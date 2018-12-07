@@ -27,9 +27,12 @@
  */
 package de.uni_freiburg.informatik.ultimate.automata.petrinet.unfolding;
 
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.Set;
 
+import de.uni_freiburg.informatik.ultimate.util.datastructures.DataStructureUtils;
 import de.uni_freiburg.informatik.ultimate.util.datastructures.relation.HashRelation;
 
 /**
@@ -43,7 +46,7 @@ import de.uni_freiburg.informatik.ultimate.util.datastructures.relation.HashRela
  *            place content type
  */
 public class ConditionEventsCoRelation<LETTER, PLACE> implements ICoRelation<LETTER, PLACE> {
-	private int mQueryCounter;
+	private long mQueryCounter;
 
 	/**
 	 * TODO schaetzc 2018-08-16: This does not seem to store all co-relations between conditions and events.
@@ -65,7 +68,7 @@ public class ConditionEventsCoRelation<LETTER, PLACE> implements ICoRelation<LET
 	}
 
 	@Override
-	public int getQueryCounter() {
+	public long getQueryCounter() {
 		return mQueryCounter;
 	}
 
@@ -77,15 +80,74 @@ public class ConditionEventsCoRelation<LETTER, PLACE> implements ICoRelation<LET
 
 	@Override
 	public void update(final Event<LETTER, PLACE> e) {
-		for (final Event<LETTER, PLACE> e1 : mBranchingProcess.getEvents()) {
-			if (isInIrreflexiveCoRelation(e, e1)) {
-				for (final Condition<LETTER, PLACE> c : e1.getSuccessorConditions()) {
-					assert !e.getPredecessorConditions().contains(c);
-					assert !e.getSuccessorConditions().contains(c);
-					mCoRelation.addPair(c,e);
+		if (e.getTransition() == null) {
+			assert e.getPredecessorConditions().isEmpty() : "not initial event";
+			return;
+		}
+//		final HashRelation<Condition<LETTER, PLACE>, Event<LETTER, PLACE>> newCoRelation = new HashRelation<>();
+//		final HashRelation<Condition<LETTER, PLACE>, Event<LETTER, PLACE>> oldCoRelation = new HashRelation<>();
+		// An existing condition c is in co-relation with e if the predecessor event
+		// of c is in co-relation with all predecessor events of e.
+		// Successor conditions of e are in co-relation with all events e' that are
+		// in co-relation with all predecessor conditions of e.
+		{
+			// new method - continuity
+			final Set<Event<LETTER, PLACE>>[] coRelatedEvents = e.getPredecessorConditions().stream()
+					.map(mCoRelation::getImage).toArray(Set[]::new);
+			final Set<Event<LETTER, PLACE>> intersection = DataStructureUtils.intersection(Arrays.asList(coRelatedEvents));
+			for (final Event<LETTER, PLACE> coRelatedEvent : intersection) {
+				for (final Condition<LETTER, PLACE> c : e.getSuccessorConditions()) {
+					mCoRelation.addPair(c, coRelatedEvent);
+//					newCoRelation.addPair(c, coRelatedEvent);
+				}
+				for (final Condition<LETTER, PLACE> c : coRelatedEvent.getSuccessorConditions()) {
+					mCoRelation.addPair(c, e);
+//					newCoRelation.addPair(c, e);
 				}
 			}
 		}
+
+		// for each (strict) ancestor event anct, the anct-successor c is in
+		// co-relation with e if for each successor event csucc of c
+		// csucc is not in the local configuration of e.
+		{
+			// new method siblings
+			final Set<Event<LETTER, PLACE>> ancestorEvents = new HashSet<>(e.getLocalConfiguration());
+			ancestorEvents.add(mBranchingProcess.getDummyRoot());
+			for (final Event<LETTER, PLACE> parent : ancestorEvents) {
+				if (parent.equals(e)) {
+					continue;
+				}
+				for (final Condition c : parent.getSuccessorConditions()) {
+					if (!someSuccessorEventIsAncestorOfE(c, e)) {
+						mCoRelation.addPair(c, e);
+//						newCoRelation.addPair(c,e);
+					}
+				}
+			}
+		}
+
+//		{
+//			// old method
+//			for (final Event<LETTER, PLACE> e1 : mBranchingProcess.getEvents()) {
+//				if (isInIrreflexiveCoRelation(e, e1)) {
+//					for (final Condition<LETTER, PLACE> c : e1.getSuccessorConditions()) {
+//						assert !e.getPredecessorConditions().contains(c);
+//						assert !e.getSuccessorConditions().contains(c);
+//						oldCoRelation.addPair(c,e);
+//					}
+//				}
+//			}
+//
+//			for (final Condition<LETTER, PLACE> c : e.getConditionMark()) {
+//				if (!e.getSuccessorConditions().contains(c)) {
+//					assert !e.getSuccessorConditions().contains(c);
+//					assert !mBranchingProcess.inCausalRelation(c, e) : c + " , " + e
+//					+ " in causal relation, not in co-relation!";
+//					oldCoRelation.addPair(c,e);
+//				}
+//			}
+//		}
 
 		// Original plan: insert all siblings of predecessors of e, that are not
 		// predecessors of e.
@@ -114,15 +176,19 @@ public class ConditionEventsCoRelation<LETTER, PLACE> implements ICoRelation<LET
 			}
 		}
 		*/
+//		oldCoRelation.addAll(mCoRelation);
+//		newCoRelation.addAll(mCoRelation);
+//		assert oldCoRelation.equals(newCoRelation) : "old " + oldCoRelation + " new: " + newCoRelation;
+//		mCoRelation.addAll(newCoRelation);
+	}
 
-		for (final Condition<LETTER, PLACE> c : e.getConditionMark()) {
-			if (!e.getSuccessorConditions().contains(c)) {
-				assert !e.getSuccessorConditions().contains(c);
-				assert !mBranchingProcess.inCausalRelation(c, e) : c + " , " + e
-						+ " in causal relation, not in co-relation!";
-				mCoRelation.addPair(c,e);
+	private boolean someSuccessorEventIsAncestorOfE(final Condition<LETTER, PLACE> c, final Event<LETTER, PLACE> e) {
+		for (final Event<LETTER, PLACE> succEvent : c.getSuccessorEvents()) {
+			if (e.getLocalConfiguration().contains(succEvent)) {
+					return true;
 			}
 		}
+		return false;
 	}
 
 	/*
@@ -169,12 +235,12 @@ public class ConditionEventsCoRelation<LETTER, PLACE> implements ICoRelation<LET
 	 * <p>
 	 * 2. If for all c1 \in *e1, c2 \in *e2: c1 ic c2 then e1 ci e2.<br>
 	 * <b>Proof:</b>Assume the left side of the implication.<br>
-	 * 
+	 *
 	 * <u>TODO schaetzc 2018-08-16: The next line is not true in the general case.
 	 * It is possible for a transition/event to have no predecessors.
 	 * In a bounded net such transition must also have no successors.
 	 * Do we support such transitions?</u><br>
-	 * 
+	 *
 	 * If e1 = e2 it is trivial, that there are c1,c2 s.t. c1=c2 _|_<br>
 	 * Assume e1 < e2, then there has to be a path between e1 and e2 s.t. \exists c1 \in *e1 s.t. c1 < e2. For each
 	 * parent c2 \in *e2 then c1 < c2 holds. (e1 > e2 analogously) _|_<br>
@@ -184,7 +250,7 @@ public class ConditionEventsCoRelation<LETTER, PLACE> implements ICoRelation<LET
 	 * If e2 = e2' then c \in *e2 _|_ (e1=e1' analogously). <br>
 	 * If e1 != e1' and e2 != e2' then there are predecessor-conditions c1 \in *e1, c2 \in *e2 s.t. c1#c2 _|_. <br>
 	 * q.e.d.
-	 * 
+	 *
 	 * @param e1 An event
 	 * @param e2 Another event
 	 * @return e1 ic e2 (e1 and e2 are in irreflexive co-relation)
